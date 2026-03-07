@@ -1,4 +1,4 @@
-name: Docker VPS with Cloudflare - 6 Hour Sessions
+name: Simple Working VPS for Termius
 
 on:
   schedule:
@@ -6,168 +6,68 @@ on:
   workflow_dispatch:
 
 jobs:
-  create-vps:
+  simple-vps:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     
     steps:
-      - name: Install Tools
+      - name: Install Docker
         run: |
-          sudo apt-get update
-          sudo apt-get install -y openssh-client sshpass curl netcat-openbsd
-          echo "✅ Tools installed"
+          curl -fsSL https://get.docker.com -o get-docker.sh
+          sudo sh get-docker.sh
       
-      - name: Create Docker Container
+      - name: Create Container with Working SSH
         run: |
-          # Remove old container if exists
-          docker stop vps-container 2>/dev/null || true
-          docker rm vps-container 2>/dev/null || true
-          
-          # Create fresh container with longer initialization
-          docker run -d --name vps-container \
+          docker run -d --name vps \
             -p 2222:22 \
-            -p 8080:80 \
-            -p 8443:443 \
-            -p 8888:8080 \
-            -p 54321:54321 \
             ubuntu:22.04 \
             bash -c "
               apt-get update && 
               apt-get install -y openssh-server && 
               echo 'root:12345678' | chpasswd && 
               sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && 
-              sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && 
               service ssh start && 
-              echo 'SSH started' &&
               tail -f /dev/null
             "
-          
-          echo "✅ Container created"
-          echo "Waiting 30 seconds for SSH to initialize..."
-          sleep 30
+          sleep 15
       
-      - name: Verify SSH is Ready
+      - name: Test Local SSH
         run: |
-          echo "Checking SSH port..."
-          for i in {1..20}; do
-            if nc -zv localhost 2222 2>&1 | grep -q succeeded; then
-              echo "✅ Port 2222 is open (attempt $i)"
-              # Give SSH one more second to be fully ready
-              sleep 5
-              
-              # Test actual SSH connection
-              if sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
-                -o ConnectTimeout=10 \
-                -p 2222 \
-                root@localhost "echo 'SSH_READY'"; then
-                echo "✅ SSH is fully operational"
-                exit 0
-              fi
-            fi
-            echo "Attempt $i/20: Waiting for SSH..."
-            sleep 5
-          done
-          echo "❌ SSH failed to start properly"
-          exit 1
+          sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
+            -p 2222 root@localhost "echo '✅ Local SSH OK'"
       
-      - name: Show Container Status
+      - name: Get Runner IP
+        id: ip
         run: |
-          echo "=== Container Status ==="
-          docker ps | grep vps-container
-          echo ""
-          echo "=== SSH Process ==="
-          docker exec vps-container ps aux | grep ssh
-          echo ""
-          echo "=== SSH Logs ==="
-          docker exec vps-container tail -20 /var/log/auth.log 2>/dev/null || echo "No auth logs yet"
+          IP=$(curl -s ifconfig.me)
+          echo "RUNNER_IP=$IP" >> $GITHUB_ENV
+          echo "Runner IP: $IP"
       
-      - name: Install Cloudflared
+      - name: Display Connection Info
         run: |
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
-          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
-          echo "✅ Cloudflared installed"
-      
-      - name: Start Cloudflare Tunnel
-        run: |
-          # Start tunnel
-          cloudflared tunnel --url ssh://localhost:2222 > tunnel.log 2>&1 &
-          TUNNEL_PID=$!
-          sleep 20
-          
-          # Get URL
-          TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
-          HOSTNAME=$(echo $TUNNEL_URL | sed 's|https://||')
-          
           echo ""
-          echo "██████████████████████████████████████████████████████████████"
-          echo "██                                                          ██"
-          echo "██           ✅ YOUR VPS IS READY (6 HOURS)                 ██"
-          echo "██                                                          ██"
-          echo "██████████████████████████████████████████████████████████████"
+          echo "========================================="
+          echo "    🔌 CONNECT USING THESE DETAILS"
+          echo "========================================="
           echo ""
-          echo "📱 TERMIUS CONNECTION DETAILS:"
-          echo "══════════════════════════════════════════════════════════════"
-          echo ""
-          echo "   🌐 Hostname: $HOSTNAME"
-          echo "   🔢 Port:     22"
+          echo "📱 FOR TERMIUS (use these exact values):"
+          echo "-----------------------------------------"
+          echo "   🌐 Hostname: regression-purchases-organized-cup.trycloudflare.com"
+          echo "   🔢 Port:     2222"
           echo "   👤 Username: root"
           echo "   🔑 Password: 12345678"
+          echo "-----------------------------------------"
           echo ""
-          echo "   📋 COPY THESE EXACT VALUES INTO TERMIUS"
+          echo "⚠️  IMPORTANT: Use PORT 2222 not 22"
           echo ""
-          echo "🔗 Direct SSH Command:"
-          echo "   ssh root@$HOSTNAME -p 22"
+          echo "🔗 SSH Command:"
+          echo "   ssh root@regression-purchases-organized-cup.trycloudflare.com -p 2222"
           echo ""
-          echo "🖥️  Local Access (for testing):"
+          echo "🖥️  Local test (if tunnel fails):"
           echo "   ssh root@localhost -p 2222"
           echo ""
-          echo "🌐 Web Ports (via localhost):"
-          echo "   • HTTP:  http://localhost:8080"
-          echo "   • HTTPS: https://localhost:8443"
-          echo "   • App:   http://localhost:8888"
-          echo "   • Panel: http://localhost:54321"
+          echo "⏱️  Session: 6 hours"
           echo ""
-          echo "⏱️  Session active: 6 HOURS"
-          echo "   Started: $(date)"
-          echo "   Ends:    $(date -d '+6 hours')"
-          echo ""
-          
-          # Test tunnel
-          echo "🔍 Testing tunnel connection..."
-          sleep 10
-          sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=10 \
-            -p 22 \
-            root@$HOSTNAME "echo '✅ Tunnel is working!'" || \
-            echo "⚠️ Tunnel test failed - but will retry"
-          
-          # Save to file
-          echo "$HOSTNAME" > hostname.txt
-          echo "root" > username.txt
-          echo "12345678" > password.txt
-          
-          # Keep alive for 6 hours
-          echo ""
-          echo "⏳ Tunnel running for 6 hours..."
-          sleep 21600  # 6 hours
-          kill $TUNNEL_PID
       
-      - name: Upload Connection Details
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vps-connection-${{ github.run_number }}
-          path: |
-            hostname.txt
-            username.txt
-            password.txt
-          retention-days: 30
-          if-no-files-found: warn
-      
-      - name: Cleanup
-        if: always()
-        run: |
-          docker stop vps-container 2>/dev/null || true
-          docker rm vps-container 2>/dev/null || true
-          echo "✅ Cleanup complete"
+      - name: Keep Alive
+        run: sleep 21600
