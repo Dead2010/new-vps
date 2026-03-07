@@ -1,164 +1,88 @@
-name: Complete VPS Setup & Connection
+name: Docker VPS - 30 Days
 
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
-    inputs:
-      vps_ip:
-        description: 'Your VPS IP Address'
-        required: false
-        default: ''
-        type: string
-      vps_password:
-        description: 'Your VPS Root Password'
-        required: false
-        default: ''
-        type: string
-      setup_mode:
-        description: 'Setup mode (new/existing)'
-        required: false
-        default: 'new'
-        type: choice
-        options:
-          - new
-          - existing
 
 jobs:
-  vps-manager:
+  create-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 360  # 6 hours
     
     steps:
-      - name: Install Tools
+      - name: Install Docker
         run: |
-          sudo apt-get update
-          sudo apt-get install -y sshpass netcat-openbsd curl wget
-          echo "✅ Tools installed"
+          curl -fsSL https://get.docker.com -o get-docker.sh
+          sudo sh get-docker.sh
+          sudo usermod -aG docker $USER
       
-      - name: Setup Mode - New User Guide
-        if: github.event.inputs.setup_mode == 'new'
+      - name: Create Ubuntu Container
         run: |
-          echo "=============================================="
-          echo "     📋 HOW TO GET YOUR FREE/PAID VPS"
-          echo "=============================================="
-          echo "🔹 OPTION 1: DIGITALOCEAN"
-          echo "   1. Go to: https://www.digitalocean.com/"
-          echo "   2. Sign up (get \$200 free credit)"
-          echo "   3. Click 'Create Droplet'"
-          echo "   4. Choose: Ubuntu 22.04 LTS"
-          echo "   5. Set your root password"
-          echo ""
-          echo "🔹 OPTION 2: VULTR"
-          echo "   1. Go to: https://www.vultr.com/"
-          echo "   2. Sign up (get \$100 free credit)"
-          echo "   3. Click 'Deploy Server'"
-          echo "   4. Choose: Ubuntu 22.04 LTS"
-          echo ""
-          echo "⚠️  AFTER GETTING YOUR VPS:"
-          echo "   1. Copy your IP address"
-          echo "   2. Copy your root password"
-          echo "   3. Run with setup_mode: existing"
-          echo "=============================================="
-      
-      - name: Configure VPS Connection
-        if: github.event.inputs.setup_mode == 'existing' && github.event.inputs.vps_ip != ''
-        run: |
-          VPS_IP="${{ github.event.inputs.vps_ip }}"
-          VPS_PORT="22"
-          VPS_USER="root"
-          VPS_PASS="${{ github.event.inputs.vps_password }}"
+          # Pull Ubuntu image
+          docker pull ubuntu:22.04
           
-          echo "VPS_IP=$VPS_IP" >> $GITHUB_ENV
-          echo "VPS_PORT=$VPS_PORT" >> $GITHUB_ENV
-          echo "VPS_USER=$VPS_USER" >> $GITHUB_ENV
-          echo "VPS_PASS=$VPS_PASS" >> $GITHUB_ENV
+          # Run container with SSH
+          docker run -d --name vps-container \
+            -p 22:22 \
+            -p 80:80 \
+            -p 443:443 \
+            -p 8080:8080 \
+            -p 54321:54321 \
+            ubuntu:22.04 \
+            bash -c "apt-get update && apt-get install -y openssh-server curl wget && echo 'root:12345678' | chpasswd && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && service ssh start && tail -f /dev/null"
           
-          echo "========================================="
-          echo "🔌 VPS CONNECTION DETAILS"
-          echo "========================================="
-          echo "IP: $VPS_IP"
-          echo "Port: $VPS_PORT"
-          echo "User: $VPS_USER"
-          echo "========================================="
+          echo "✅ Container created"
       
-      - name: Test VPS Connection
-        if: github.event.inputs.setup_mode == 'existing' && github.event.inputs.vps_ip != ''
+      - name: Get Container IP
+        id: container_ip
         run: |
-          echo "🔍 Testing connection to $VPS_IP on port 22..."
-          
-          if nc -zv -w 5 $VPS_IP 22 2>&1 | grep -q "succeeded"; then
-            echo "✅ Port 22 is OPEN"
-            echo "PORT_OPEN=true" >> $GITHUB_ENV
-          else
-            echo "❌ Port 22 is CLOSED"
-            echo "PORT_OPEN=false" >> $GITHUB_ENV
-            echo "Check if VPS is running and SSH is enabled"
-            exit 1
-          fi
+          CONTAINER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' vps-container)
+          echo "CONTAINER_IP=$CONTAINER_IP" >> $GITHUB_ENV
+          echo "Container IP: $CONTAINER_IP"
       
-      - name: Connect to VPS
-        if: env.PORT_OPEN == 'true'
+      - name: Install Cloudflare Tunnel
         run: |
-          echo "🚀 Connecting to VPS..."
-          
-          sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=10 \
-            -p 22 \
-            $VPS_USER@$VPS_IP "
-            echo '✅ CONNECTED SUCCESSFULLY'
-            echo 'Hostname:' \$(hostname)
-            echo 'Uptime:' \$(uptime -p)
-            echo 'Memory:'
-            free -h
-            echo 'Disk:'
-            df -h
-          " || echo "❌ Connection failed"
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
       
-      - name: Save Connection Info
-        if: always()
+      - name: Create Tunnel
         run: |
-          mkdir -p logs
+          cloudflared tunnel --url ssh://localhost:22 > tunnel.log 2>&1 &
+          TUNNEL_PID=$!
+          sleep 15
           
-          echo "=========================================" > logs/connection.txt
-          echo "VPS CONNECTION INFORMATION" >> logs/connection.txt
-          echo "=========================================" >> logs/connection.txt
-          echo "Date: $(date)" >> logs/connection.txt
-          echo "Run #: ${{ github.run_number }}" >> logs/connection.txt
-          echo "" >> logs/connection.txt
-          echo "VPS IP: ${{ github.event.inputs.vps_ip }}" >> logs/connection.txt
-          echo "Username: root" >> logs/connection.txt
-          echo "Password: [HIDDEN]" >> logs/connection.txt
-          echo "" >> logs/connection.txt
-          echo "Status: ${{ job.status }}" >> logs/connection.txt
-          echo "=========================================" >> logs/connection.txt
-      
-      - name: Upload Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vps-logs-${{ github.run_number }}
-          path: logs/
-          retention-days: 30
-      
-      - name: Final Summary
-        if: always()
-        run: |
-          echo ""
-          echo "══════════════════════════════════════════════"
-          echo "           🎯 VPS SETUP SUMMARY"
-          echo "══════════════════════════════════════════════"
-          echo ""
-          
-          if [[ "${{ github.event.inputs.setup_mode }}" == "new" ]]; then
-            echo "   📋 You're in SETUP MODE"
-            echo "   ✅ Follow the guide above to get your VPS"
-          else
-            echo "   🌐 VPS IP: ${{ github.event.inputs.vps_ip }}"
-            echo "   📊 Status:  ${{ job.status }}"
-          fi
+          TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
+          HOSTNAME=$(echo $TUNNEL_URL | sed 's|https://||')
           
           echo ""
-          echo "   ⏰ Next run in 6 hours"
-          echo "   📅 30-day schedule active"
-          echo "══════════════════════════════════════════════"
+          echo "██████████████████████████████████████████████████████████████"
+          echo "██                                                          ██"
+          echo "██           ✅ YOUR VPS IS READY                           ██"
+          echo "██                                                          ██"
+          echo "██████████████████████████████████████████████████████████████"
+          echo ""
+          echo "📱 TERMIUS CONNECTION DETAILS:"
+          echo "══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "   🌐 Hostname: $HOSTNAME"
+          echo "   🔢 Port:     22"
+          echo "   👤 Username: root"
+          echo "   🔑 Password: 12345678"
+          echo ""
+          echo "   📋 COPY THESE EXACT VALUES INTO TERMIUS"
+          echo ""
+          echo "🔗 Direct SSH Command:"
+          echo "   ssh root@$HOSTNAME -p 22"
+          echo ""
+          echo "⏱️  Session active for: 6 HOURS"
+          echo "   Next session in 6 hours"
+          echo "   30-day total: 120 sessions"
+          echo ""
+          
+          # Save to file
+          echo "$HOSTNAME" > vps-hostname.txt
+          
+          sleep 21600  # 6 hours
+          kill $TUNNEL_PID
