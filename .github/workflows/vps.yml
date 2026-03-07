@@ -4,14 +4,9 @@ on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
-    inputs:
-      vps_ip:
-        description: 'VPS IP Address'
-        required: false
-        type: string
 
 jobs:
-  connect:
+  vps-connect:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     
@@ -23,54 +18,64 @@ jobs:
       
       - name: Set VPS Details
         run: |
-          # !!! CHANGE THIS TO YOUR ACTUAL VPS IP !!!
-          DEFAULT_IP="your-vps-ip-here"
+          # !!! REPLACE WITH YOUR ACTUAL VPS IP !!!
+          VPS_IP="YOUR_VPS_IP_HERE"
+          VPS_USER="root"
+          VPS_PASS="root"
           
-          if [[ -n "${{ github.event.inputs.vps_ip }}" ]]; then
-            IP="${{ github.event.inputs.vps_ip }}"
-          else
-            IP="$DEFAULT_IP"
-          fi
-          
-          echo "IP=$IP" >> $GITHUB_ENV
-          echo "USER=root" >> $GITHUB_ENV
-          echo "PASS=root" >> $GITHUB_ENV
+          echo "VPS_IP=$VPS_IP" >> $GITHUB_ENV
+          echo "VPS_USER=$VPS_USER" >> $GITHUB_ENV
+          echo "VPS_PASS=$VPS_PASS" >> $GITHUB_ENV
           
           echo "================================="
-          echo "VPS: $IP"
-          echo "User: root"
+          echo "VPS Connection Details:"
+          echo "IP: $VPS_IP"
+          echo "User: $VPS_USER"
           echo "================================="
-          
-          if [[ "$IP" == "your-vps-ip-here" ]]; then
-            echo "❌ ERROR: Please set your VPS IP"
-            exit 1
-          fi
+      
+      - name: Test Connection
+        run: |
+          echo "Testing connection to $VPS_IP at $(date)"
+          ping -c 1 -W 3 $VPS_IP > /dev/null 2>&1 && echo "✅ VPS is reachable" || echo "⚠️ VPS not responding to ping"
       
       - name: Connect to VPS
         run: |
-          echo "Connecting at $(date)"
-          echo ""
+          echo "================================="
+          echo "Connecting to VPS at $(date)"
+          echo "================================="
           
-          sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no \
-            root@$IP "
-            echo '✅ CONNECTED SUCCESSFULLY'
+          sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 \
+            $VPS_USER@$VPS_IP "
+            echo '✅ SUCCESSFULLY CONNECTED'
             echo ''
-            echo '📋 SYSTEM INFO:'
+            echo '📋 SYSTEM INFORMATION:'
             echo '  Hostname: ' \$(hostname)
+            echo '  OS: ' \$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')
+            echo '  Kernel: ' \$(uname -r)
             echo '  Uptime: ' \$(uptime -p)
-            echo '  Date: ' \$(date)
             echo ''
-            echo '💾 MEMORY:'
+            echo '💾 MEMORY USAGE:'
             free -h
             echo ''
-            echo '💽 DISK:'
+            echo '💽 DISK USAGE:'
             df -h
-          " || echo "❌ Connection failed"
+            echo ''
+            echo '🌐 IP ADDRESSES:'
+            hostname -I
+            echo ''
+            echo '👥 LOGGED IN USERS:'
+            who || echo '  No users'
+            echo ''
+            echo '📅 CURRENT TIME:'
+            date
+          " || echo "❌ Connection failed - Check if VPS is running and IP is correct"
       
-      - name: Next Run
+      - name: Next Run Info
         run: |
           echo ""
           echo "================================="
-          echo "Next run in 6 hours"
-          echo "30-day schedule active"
+          echo "✅ Workflow completed at $(date)"
+          echo "⏰ Next run in 6 hours"
+          echo "📅 Will run for 30 days"
           echo "================================="
