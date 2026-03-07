@@ -1,32 +1,21 @@
-name: Complete VPS Setup & Connection
+name: Cloudflare Tunnel SSH - 30 Days
 
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
-      vps_ip:
-        description: 'Your VPS IP Address (get from provider)'
-        required: false
-        default: ''
-        type: string
-      vps_password:
-        description: 'Your VPS Root Password'
-        required: false
-        default: ''
-        type: string
       setup_mode:
-        description: 'Setup mode (new/existing)'
+        description: 'Setup mode (install/connect)'
         required: false
-        default: 'new'
+        default: 'connect'
         type: choice
         options:
-          - new
-          - existing
+          - install
+          - connect
 
 jobs:
-  vps-manager:
-    name: 🔧 VPS Manager
+  cloudflare-ssh:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     
@@ -37,261 +26,134 @@ jobs:
           sudo apt-get install -y sshpass netcat-openbsd curl wget
           echo "✅ Tools installed"
       
-      - name: VPS Setup Guide (New Users)
-        if: github.event.inputs.setup_mode == 'new'
+      - name: Install Cloudflare Tunnel (First Time)
+        if: github.event.inputs.setup_mode == 'install'
         run: |
-          echo "=============================================="
-          echo "     📋 HOW TO GET YOUR FREE/PAID VPS"
-          echo "=============================================="
+          echo "========================================="
+          echo "🔧 CLOUDFLARE TUNNEL INSTALLATION GUIDE"
+          echo "========================================="
           echo ""
-          echo "🔹 OPTION 1: DIGITALOCEAN (Easiest, $$)"
-          echo "   1. Go to: https://www.digitalocean.com/"
-          echo "   2. Sign up (get \$200 free credit)"
-          echo "   3. Click 'Create Droplet'"
-          echo "   4. Choose: Ubuntu 22.04 LTS"
-          echo "   5. Choose: Basic plan (\$4-6/month)"
-          echo "   6. Choose: Password authentication"
-          echo "   7. Set your root password"
-          echo "   8. Click 'Create Droplet'"
-          echo "   9. Your IP will appear (e.g., 164.92.83.192)"
-          echo ""
-          echo "🔹 OPTION 2: VULTR (Great, $$)"
-          echo "   1. Go to: https://www.vultr.com/"
-          echo "   2. Sign up (get \$100 free credit)"
-          echo "   3. Click 'Deploy Server'"
-          echo "   4. Choose: Ubuntu 22.04 LTS"
-          echo "   5. Choose: \$2.50-6/month plan"
-          echo "   6. Set your password"
-          echo "   7. Deploy and get IP"
-          echo ""
-          echo "🔹 OPTION 3: AWS FREE TIER (12 months free)"
-          echo "   1. Go to: https://aws.amazon.com/free/"
-          echo "   2. Create account (credit card required)"
-          echo "   3. Launch EC2 instance (t2.micro)"
-          echo "   4. Get Public IPv4 from dashboard"
-          echo ""
-          echo "🔹 OPTION 4: ORACLE CLOUD (Always free)"
-          echo "   1. Go to: https://www.oracle.com/cloud/free/"
+          echo "📝 STEP 1: Create Cloudflare Account"
+          echo "   1. Go to: https://dash.cloudflare.com/"
           echo "   2. Sign up for free account"
-          echo "   3. Create VM instance"
-          echo "   4. Get your IP"
+          echo "   3. Add your domain (or use trycloudflare.com for testing)"
           echo ""
-          echo "=============================================="
+          echo "📝 STEP 2: Install cloudflared on your local machine"
+          echo "   # Download cloudflared"
+          echo "   wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+          echo "   sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared"
+          echo "   sudo chmod +x /usr/local/bin/cloudflared"
           echo ""
-          echo "⚠️  AFTER GETTING YOUR VPS:"
-          echo "   1. Copy your IP address"
-          echo "   2. Copy your root password"
-          echo "   3. Run this workflow again with:"
-          echo "      - setup_mode: existing"
-          echo "      - vps_ip: YOUR_IP"
-          echo "      - vps_password: YOUR_PASSWORD"
-          echo "=============================================="
-      
-      - name: Configure VPS Connection
-        if: github.event.inputs.setup_mode == 'existing' && github.event.inputs.vps_ip != ''
-        run: |
-          VPS_IP="${{ github.event.inputs.vps_ip }}"
-          VPS_PORT="22"
-          VPS_USER="root"
-          VPS_PASS="${{ github.event.inputs.vps_password }}"
-          
-          echo "VPS_IP=$VPS_IP" >> $GITHUB_ENV
-          echo "VPS_PORT=$VPS_PORT" >> $GITHUB_ENV
-          echo "VPS_USER=$VPS_USER" >> $GITHUB_ENV
-          echo "VPS_PASS=$VPS_PASS" >> $GITHUB_ENV
-          
-          echo "========================================="
-          echo "     🔌 VPS CONNECTION DETAILS"
-          echo "========================================="
+          echo "📝 STEP 3: Authenticate Cloudflare Tunnel"
+          echo "   cloudflared tunnel login"
+          echo "   (Follow the URL to authenticate)"
           echo ""
-          echo "   🌐 IP Address:    $VPS_IP"
-          echo "   🔢 SSH Port:      $VPS_PORT"
-          echo "   👤 Username:      $VPS_USER"
-          echo "   🔑 Password:      [HIDDEN]"
+          echo "📝 STEP 4: Create a Tunnel"
+          echo "   cloudflared tunnel create ssh-tunnel"
           echo ""
-          echo "   📱 For Termius:"
-          echo "   Host: $VPS_IP"
-          echo "   Port: $VPS_PORT"
-          echo "   User: $VPS_USER"
-          echo "   Pass: [Your password]"
+          echo "📝 STEP 5: Configure Tunnel"
+          echo "   Edit ~/.cloudflared/config.yml:"
+          echo "   tunnel: ssh-tunnel"
+          echo "   credentials-file: /home/user/.cloudflared/ssh-tunnel.json"
+          echo "   ingress:"
+          echo "     - hostname: ssh.yourdomain.com"
+          echo "       service: ssh://localhost:22"
+          echo "     - service: http_status:404"
           echo ""
-          echo "   🔗 SSH Command:"
-          echo "   ssh $VPS_USER@$VPS_IP -p $VPS_PORT"
+          echo "📝 STEP 6: Route DNS"
+          echo "   cloudflared tunnel route dns ssh-tunnel ssh.yourdomain.com"
+          echo ""
+          echo "📝 STEP 7: Run Tunnel"
+          echo "   cloudflared tunnel run ssh-tunnel"
+          echo ""
+          echo "✅ Then connect: ssh root@ssh.yourdomain.com -p 22"
+          echo "   Password: 12345678"
           echo "========================================="
       
-      - name: Test VPS Connection
-        if: github.event.inputs.setup_mode == 'existing' && github.event.inputs.vps_ip != ''
+      - name: Setup SSH with Password
         run: |
           echo "========================================="
-          echo "🔍 TESTING CONNECTION TO VPS"
+          echo "🔐 CONFIGURING SSH WITH PASSWORD"
           echo "========================================="
           echo ""
           
-          echo "📡 Testing port $VPS_PORT on $VPS_IP..."
-          if nc -zv -w 5 $VPS_IP $VPS_PORT 2>&1 | grep -q "succeeded"; then
-            echo "   ✅ Port $VPS_PORT is OPEN"
-            echo "PORT_OPEN=true" >> $GITHUB_ENV
-          else
-            echo "   ❌ Port $VPS_PORT is CLOSED"
-            echo "PORT_OPEN=false" >> $GITHUB_ENV
-            echo ""
-            echo "🔧 Troubleshooting:"
-            echo "   1. Is your VPS running? (check provider dashboard)"
-            echo "   2. Is the IP correct? $VPS_IP"
-            echo "   3. Is SSH enabled on your VPS?"
-            echo "   4. Check firewall settings"
-            exit 1
-          fi
+          # Set root password
+          echo "root:12345678" | sudo chpasswd
+          
+          # Configure SSH to allow password login
+          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          
+          # Restart SSH
+          sudo systemctl restart ssh || sudo service ssh restart
+          
+          echo "✅ SSH configured with password: 12345678"
+          echo "✅ Root login enabled"
+          echo ""
+          echo "📋 Connection Details:"
+          echo "   Username: root"
+          echo "   Password: 12345678"
+          echo "   Port: 22"
       
-      - name: Connect to VPS and Get System Info
-        if: env.PORT_OPEN == 'true'
+      - name: Install and Run TryCloudflare Tunnel (Quick Test)
+        if: github.event.inputs.setup_mode == 'connect'
         run: |
           echo "========================================="
-          echo "🚀 CONNECTING TO YOUR VPS"
+          echo "🚀 STARTING TRYCLOUDFLARE TUNNEL"
           echo "========================================="
           echo ""
           
-          # Create SSH connection and get system info
-          sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=10 \
-            -p $VPS_PORT \
-            $VPS_USER@$VPS_IP "
-            echo '✅ SUCCESSFULLY CONNECTED TO YOUR VPS'
-            echo '========================================='
-            echo ''
-            echo '📋 VPS INFORMATION:'
-            echo '  Hostname: ' \$(hostname)
-            echo '  Public IP: ' \$(curl -s ifconfig.me 2>/dev/null || echo 'N/A')
-            echo '  OS: ' \$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')
-            echo '  Kernel: ' \$(uname -r)
-            echo '  Uptime: ' \$(uptime -p)
-            echo ''
-            echo '💾 RESOURCES:'
-            echo '  CPU Cores: ' \$(nproc)
-            echo '  Memory:'
-            free -h
-            echo '  Disk:'
-            df -h
-            echo ''
-            echo '🌐 NETWORK:'
-            echo '  Open Ports:'
-            ss -tuln | grep LISTEN | head -10
-            echo ''
-            echo '👥 USERS:'
-            echo '  Logged in:'
-            who || echo '  No users'
-            echo ''
-            echo '📅 DATE:'
-            date
-            echo '========================================='
-          " || echo "❌ Connection failed - Check your password"
-      
-      - name: Setup SSH Key for Termius (Optional)
-        if: env.PORT_OPEN == 'true'
-        run: |
-          echo "========================================="
-          echo "🔑 SSH KEY SETUP FOR TERMIUS"
-          echo "========================================="
-          echo ""
-          echo "For easier access, you can set up SSH keys:"
-          echo ""
-          echo "📱 ON YOUR LOCAL COMPUTER/PHONE:"
-          echo "1. Open Termius"
-          echo "2. Go to Keys section"
-          echo "3. Generate a new SSH key"
-          echo "4. Copy the public key"
-          echo ""
-          echo "🖥️  ON YOUR VPS (run these commands manually):"
-          echo "   mkdir -p ~/.ssh"
-          echo "   echo 'YOUR_PUBLIC_KEY' >> ~/.ssh/authorized_keys"
-          echo "   chmod 600 ~/.ssh/authorized_keys"
-          echo "   chmod 700 ~/.ssh"
-          echo ""
-          echo "Then you can connect without password!"
-          echo "========================================="
-      
-      - name: Install and Run SSHX
-        if: env.PORT_OPEN == 'true'
-        run: |
-          echo "========================================="
-          echo "🔗 SSHX SESSION (Share your terminal)"
-          echo "========================================="
-          echo ""
+          # Download cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
           
-          curl -sSf https://sshx.io/get | sh -s run &
-          SSHX_PID=$!
+          # Start tunnel in background
+          ./cloudflared-linux-amd64 tunnel --url ssh://localhost:22 &
+          TUNNEL_PID=$!
+          
+          echo "⏱️  Waiting for tunnel to establish..."
           sleep 10
           
           echo ""
-          echo "✅ SSHX session started"
-          echo "📝 Look for URL like: https://sshx.io/s/xxxx"
-          echo "⏱️  Session runs for 300 seconds"
+          echo "✅ TUNNEL IS RUNNING!"
+          echo ""
+          echo "🔗 YOUR SSH CONNECTION DETAILS:"
+          echo "========================================="
+          echo "Username: root"
+          echo "Password: 12345678"
+          echo ""
+          echo "📡 The tunnel URL will appear above"
+          echo "   Look for: https://random-name.trycloudflare.com"
+          echo ""
+          echo "🔌 Connect using:"
+          echo "   ssh root@random-name.trycloudflare.com -p 22"
+          echo ""
+          echo "⏱️  Tunnel runs for 300 seconds (5 minutes)"
           echo ""
           sleep 300
-          kill $SSHX_PID 2>/dev/null || true
+          
+          kill $TUNNEL_PID 2>/dev/null || true
+          echo "✅ Tunnel closed"
       
       - name: Save Connection Info
         if: always()
         run: |
-          mkdir -p vps-logs
-          
-          echo "=========================================" > vps-logs/connection-info.txt
-          echo "VPS CONNECTION INFORMATION" >> vps-logs/connection-info.txt
-          echo "=========================================" >> vps-logs/connection-info.txt
-          echo "Date: $(date)" >> vps-logs/connection-info.txt
-          echo "Run #: ${{ github.run_number }}" >> vps-logs/connection-info.txt
-          echo "" >> vps-logs/connection-info.txt
-          echo "YOUR VPS DETAILS FOR TERMIUS:" >> vps-logs/connection-info.txt
-          echo "-----------------------------------------" >> vps-logs/connection-info.txt
-          echo "Hostname/IP: ${{ github.event.inputs.vps_ip }}" >> vps-logs/connection-info.txt
-          echo "SSH Port:    22" >> vps-logs/connection-info.txt
-          echo "Username:    root" >> vps-logs/connection-info.txt
-          echo "Password:    [The password you entered]" >> vps-logs/connection-info.txt
-          echo "-----------------------------------------" >> vps-logs/connection-info.txt
-          echo "" >> vps-logs/connection-info.txt
-          echo "Connection Status: ${{ job.status }}" >> vps-logs/connection-info.txt
-          echo "=========================================" >> vps-logs/connection-info.txt
-          
-          echo "${{ github.event.inputs.vps_ip }}" > vps-logs/vps-ip.txt
+          mkdir -p logs
+          echo "=========================================" > logs/cloudflare.txt
+          echo "CLOUDFLARE TUNNEL SSH" >> logs/cloudflare.txt
+          echo "=========================================" >> logs/cloudflare.txt
+          echo "Date: $(date)" >> logs/cloudflare.txt
+          echo "Username: root" >> logs/cloudflare.txt
+          echo "Password: 12345678" >> logs/cloudflare.txt
+          echo "" >> logs/cloudflare.txt
+          echo "To connect: ssh root@YOUR-TUNNEL-URL -p 22" >> logs/cloudflare.txt
+          echo "=========================================" >> logs/cloudflare.txt
       
       - name: Upload Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vps-info-${{ github.run_number }}
-          path: vps-logs/
+          name: cloudflare-logs-${{ github.run_number }}
+          path: logs/
           retention-days: 30
-      
-      - name: Final Summary
-        if: always()
-        run: |
-          echo ""
-          echo "══════════════════════════════════════════════"
-          echo "           🎯 VPS SETUP SUMMARY"
-          echo "══════════════════════════════════════════════"
-          echo ""
-          
-          if [[ "${{ github.event.inputs.setup_mode }}" == "new" ]]; then
-            echo "   📋 You're in SETUP MODE"
-            echo "   ✅ Follow the guide above to get your VPS"
-            echo "   🔄 Then run again with your real IP"
-          else
-            echo "   🌐 VPS IP: ${{ github.event.inputs.vps_ip }}"
-            echo "   🔢 Port:    22"
-            echo "   👤 User:    root"
-            echo "   📊 Status:  ${{ job.status }}"
-            echo ""
-            echo "   📱 TERMIUS SETUP:"
-            echo "   1. Open Termius"
-            echo "   2. Add new host"
-            echo "   3. IP: ${{ github.event.inputs.vps_ip }}"
-            echo "   4. Port: 22"
-            echo "   5. User: root"
-            echo "   6. Password: [your password]"
-            echo "   7. Save and connect"
-          fi
-          
-          echo ""
-          echo "   ⏰ Next run in 6 hours"
-          echo "   📅 30-day schedule active"
-          echo "══════════════════════════════════════════════"
