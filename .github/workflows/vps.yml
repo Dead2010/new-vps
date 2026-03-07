@@ -1,12 +1,20 @@
-name: Docker VPS Diagnostic & Fix
+name: Docker VPS with Ngrok - 8 Hour Sessions
 
 on:
+  schedule:
+    - cron: '0 */8 * * *'
   workflow_dispatch:
+    inputs:
+      ngrok_token:
+        description: 'Your ngrok auth token'
+        required: true
+        default: '3AGZkWMXr7YsLclerO066IEYFLt_4KXrzELfETgqD3yED9qku'
+        type: string
 
 jobs:
-  fix-vps:
+  create-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 500  # 8 hours + buffer
     
     steps:
       - name: Install Tools
@@ -15,149 +23,109 @@ jobs:
           sudo apt-get install -y openssh-client sshpass curl netcat-openbsd
           echo "✅ Tools installed"
       
-      - name: Check Docker Container
+      - name: Create Docker Container
         run: |
-          echo "========================================="
-          echo "🔍 CHECKING DOCKER CONTAINER"
-          echo "========================================="
-          docker ps -a
-          echo ""
+          # Remove old container if exists
+          docker stop vps-container 2>/dev/null || true
+          docker rm vps-container 2>/dev/null || true
           
-          # Check if container exists
-          if docker ps | grep -q vps-container; then
-            echo "✅ Container is running"
-            docker exec vps-container ps aux | grep ssh
-          else
-            echo "❌ Container not running - restarting..."
-            docker run -d --name vps-container \
-              -p 2222:22 \
-              -p 8080:80 \
-              -p 8443:443 \
-              -p 8888:8080 \
-              -p 54321:54321 \
-              ubuntu:22.04 \
-              bash -c "
-                apt-get update && 
-                apt-get install -y openssh-server && 
-                echo 'root:12345678' | chpasswd && 
-                sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && 
-                sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && 
-                service ssh start && 
-                tail -f /dev/null
-              "
-            echo "✅ Container restarted"
-            sleep 10
-          fi
+          # Create fresh container
+          docker run -d --name vps-container \
+            -p 2222:22 \
+            -p 8080:80 \
+            -p 8443:443 \
+            -p 8888:8080 \
+            -p 54321:54321 \
+            ubuntu:22.04 \
+            bash -c "
+              apt-get update && 
+              apt-get install -y openssh-server && 
+              echo 'root:12345678' | chpasswd && 
+              sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && 
+              sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && 
+              service ssh start && 
+              tail -f /dev/null
+            "
+          
+          echo "✅ Container created"
+          sleep 10
       
-      - name: Fix SSH Configuration
+      - name: Verify SSH
         run: |
-          echo "========================================="
-          echo "🔧 FIXING SSH CONFIGURATION"
-          echo "========================================="
-          
-          # Ensure SSH is properly configured
-          docker exec vps-container bash -c "
-            echo '========= SSH STATUS ========='
-            service ssh status
-            
-            echo '========= FIXING SSH ========='
-            # Reconfigure SSH
-            sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-            sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-            echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
-            echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
-            
-            # Restart SSH
-            service ssh restart
-            sleep 5
-            service ssh status
-            
-            echo '========= SSH LISTENING PORTS ========='
-            apt-get update && apt-get install -y net-tools
-            netstat -tlnp | grep ssh || ss -tlnp | grep ssh
-          "
+          sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
+            -p 2222 root@localhost "echo '✅ SSH working in container'"
       
-      - name: Test Local SSH Connection
+      - name: Install Ngrok
         run: |
-          echo "========================================="
-          echo "🔍 TESTING LOCAL SSH CONNECTION"
-          echo "========================================="
+          # Download and install ngrok
+          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          tar -xzf ngrok-v3-stable-linux-amd64.tgz
+          sudo mv ngrok /usr/local/bin/ngrok
           
-          # Test connection to container via localhost:2222
-          echo "Testing localhost:2222..."
-          if nc -zv localhost 2222 2>&1 | grep -q succeeded; then
-            echo "✅ Port 2222 is open locally"
-            
-            # Try SSH connection
-            sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=5 \
-              -p 2222 \
-              root@localhost "echo '✅ Local SSH working!'" && \
-              echo "✅ Local SSH successful" || \
-              echo "❌ Local SSH failed - Check password"
-          else
-            echo "❌ Port 2222 not open locally"
-            echo "Check if container is running: docker ps"
-          fi
+          # Add auth token
+          ngrok config add-authtoken "${{ github.event.inputs.ngrok_token }}"
+          echo "✅ Ngrok configured"
       
-      - name: Restart Cloudflare Tunnel
+      - name: Start Ngrok SSH Tunnel
         run: |
-          echo "========================================="
-          echo "🚀 RESTARTING CLOUDFLARE TUNNEL"
-          echo "========================================="
+          # Start ngrok tunnel for SSH
+          ngrok tcp 2222 --log=stdout > ngrok.log 2>&1 &
+          NGROK_PID=$!
+          sleep 10
           
-          # Kill any existing tunnels
-          pkill cloudflared 2>/dev/null || true
-          
-          # Download fresh cloudflared
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
-          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
-          
-          # Start new tunnel
-          cloudflared tunnel --url ssh://localhost:2222 > tunnel.log 2>&1 &
-          TUNNEL_PID=$!
-          sleep 15
-          
-          # Get URL
-          TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
-          HOSTNAME=$(echo $TUNNEL_URL | sed 's|https://||')
+          # Get the public URL
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[0-9.]*:[0-9]*' | head -1)
+          NGROK_HOST=$(echo $NGROK_URL | cut -d/ -f3 | cut -d: -f1)
+          NGROK_PORT=$(echo $NGROK_URL | cut -d: -f4)
           
           echo ""
           echo "██████████████████████████████████████████████████████████████"
           echo "██                                                          ██"
-          echo "██           ✅ NEW TUNNEL CREATED                          ██"
+          echo "██           ✅ NGROK VPS IS READY                          ██"
           echo "██                                                          ██"
           echo "██████████████████████████████████████████████████████████████"
           echo ""
-          echo "📱 NEW TERMIUS CONNECTION DETAILS:"
+          echo "📱 TERMIUS CONNECTION DETAILS (8 HOUR SESSION):"
           echo "══════════════════════════════════════════════════════════════"
           echo ""
-          echo "   🌐 Hostname: $HOSTNAME"
-          echo "   🔢 Port:     22"
+          echo "   🌐 Hostname: $NGROK_HOST"
+          echo "   🔢 Port:     $NGROK_PORT"
           echo "   👤 Username: root"
           echo "   🔑 Password: 12345678"
           echo ""
           echo "   📋 COPY THESE EXACT VALUES INTO TERMIUS"
           echo ""
           echo "🔗 Direct SSH Command:"
-          echo "   ssh root@$HOSTNAME -p 22"
+          echo "   ssh root@$NGROK_HOST -p $NGROK_PORT"
           echo ""
           echo "🖥️  Local Access (for testing):"
           echo "   ssh root@localhost -p 2222"
           echo ""
-          echo "⏱️  This tunnel is active NOW for 5 minutes"
+          echo "🌐 Web Ports (via localhost only):"
+          echo "   • HTTP:  http://localhost:8080"
+          echo "   • HTTPS: https://localhost:8443"
+          echo "   • App:   http://localhost:8888"
+          echo "   • Panel: http://localhost:54321"
+          echo ""
+          echo "⏱️  Session active for: 8 HOURS"
+          echo "   Next session in 8 hours"
+          echo "   30-day total: 90 sessions"
           echo ""
           
           # Save to file
-          echo "$HOSTNAME" > new-hostname.txt
+          echo "$NGROK_HOST" > ngrok-host.txt
+          echo "$NGROK_PORT" > ngrok-port.txt
           
-          # Keep alive for testing
-          sleep 300  # 5 minutes for testing
-          kill $TUNNEL_PID
+          # Keep alive for 8 hours
+          sleep 28800  # 8 hours
+          kill $NGROK_PID
       
-      - name: Upload New Connection Details
+      - name: Upload Connection Details
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fixed-connection
-          path: new-hostname.txt
+          name: ngrok-connection-${{ github.run_number }}
+          path: |
+            ngrok-host.txt
+            ngrok-port.txt
+          retention-days: 30
