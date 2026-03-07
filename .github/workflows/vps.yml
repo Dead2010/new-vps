@@ -15,7 +15,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y sshpass netcat-openbsd traceroute
-          # Start SSH service for localhost connections
           sudo systemctl start ssh || sudo service ssh start
           echo "✅ SSH tools installed"
       
@@ -32,61 +31,84 @@ jobs:
           echo "VPS_USER=$VPS_USER" >> $GITHUB_ENV
           echo "VPS_PASS=$VPS_PASS" >> $GITHUB_ENV
           
-          echo "================================="
-          echo "✅ VPS CONNECTION DETAILS"
-          echo "================================="
-          echo "📌 IP Address: $VPS_IP (localhost)"
-          echo "🔌 SSH Port:   $VPS_PORT"
-          echo "👤 Username:   $VPS_USER"
-          echo "================================="
+          echo "========================================="
+          echo "     🔌 SSH CONNECTION DETAILS"
+          echo "========================================="
+          echo ""
+          echo "   🌐 SSH IP ADDRESS:    $VPS_IP"
+          echo "   🔢 SSH PORT:          $VPS_PORT"
+          echo "   👤 SSH USERNAME:      $VPS_USER"
+          echo "   🔑 SSH PASSWORD:      [HIDDEN]"
+          echo ""
+          echo "   📝 Full SSH Command:"
+          echo "   ssh $VPS_USER@$VPS_IP -p $VPS_PORT"
+          echo ""
+          echo "========================================="
+      
+      - name: Show SSH IP
+        run: |
+          echo "========================================="
+          echo "           📍 SSH IP ADDRESS"
+          echo "========================================="
+          echo ""
+          echo "   ██████╗ ███████╗███████╗"
+          echo "   ██╔══██╗██╔════╝██╔════╝"
+          echo "   ██████╔╝█████╗  ███████╗"
+          echo "   ██╔═══╝ ██╔══╝  ╚════██║"
+          echo "   ██║     ███████╗███████║"
+          echo "   ╚═╝     ╚══════╝╚══════╝"
+          echo ""
+          echo "   ➜ IP: $VPS_IP"
+          echo "   ➜ PORT: $VPS_PORT"
+          echo "   ➜ USER: $VPS_USER"
+          echo ""
+          echo "   🔗 Quick Connect:"
+          echo "   ssh $VPS_USER@$VPS_IP -p $VPS_PORT"
+          echo ""
+          echo "========================================="
       
       - name: Setup Local SSH
         run: |
-          # Set root password
           echo "root:root" | sudo chpasswd
-          
-          # Configure SSH to allow root login
           sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
           sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          
-          # Restart SSH
           sudo systemctl restart ssh || sudo service ssh restart
           echo "✅ Local SSH configured"
       
       - name: Test Local Connection
         run: |
-          echo "🔍 Testing connection to localhost on port $VPS_PORT..."
+          echo "🔍 Testing connection to $VPS_IP on port $VPS_PORT..."
           
-          # Test 1: Ping test
           echo "📡 Test 1: Ping Test"
           if ping -c 2 -W 3 $VPS_IP > /dev/null 2>&1; then
-            echo "   ✅ Localhost is reachable"
+            echo "   ✅ $VPS_IP is reachable"
           else
-            echo "   ⚠️  Localhost ping failed (unusual)"
+            echo "   ⚠️  $VPS_IP not responding to ping"
           fi
           echo ""
           
-          # Test 2: Port test
           echo "📡 Test 2: Port $VPS_PORT Test"
           if nc -zv -w 5 $VPS_IP $VPS_PORT 2>&1 | grep -q "succeeded"; then
-            echo "   ✅ Port $VPS_PORT is open"
+            echo "   ✅ Port $VPS_PORT is open on $VPS_IP"
             echo "PORT_OPEN=true" >> $GITHUB_ENV
           else
-            echo "   ❌ Port $VPS_PORT is not accessible"
+            echo "   ❌ Port $VPS_PORT is not accessible on $VPS_IP"
             echo "PORT_OPEN=false" >> $GITHUB_ENV
           fi
       
-      - name: Connect to Localhost
+      - name: Connect to VPS
         if: env.PORT_OPEN == 'true'
         run: |
-          echo "🚀 Connecting to localhost VPS..."
+          echo "========================================="
+          echo "🚀 CONNECTING TO $VPS_IP:$VPS_PORT"
+          echo "========================================="
           echo ""
           
           sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no \
             -o ConnectTimeout=10 \
             -p $VPS_PORT \
             $VPS_USER@$VPS_IP "
-            echo '✅ SUCCESSFULLY CONNECTED TO LOCALHOST'
+            echo '✅ SUCCESSFULLY CONNECTED TO $VPS_IP'
             echo '========================================='
             echo ''
             echo '📋 SYSTEM INFORMATION:'
@@ -110,17 +132,46 @@ jobs:
             echo '📅 CURRENT TIME:'
             date
             echo '========================================='
-          " || echo "❌ Connection failed"
+          " || echo "❌ Connection to $VPS_IP failed"
+      
+      - name: Display Connection Summary
+        if: always()
+        run: |
+          echo ""
+          echo "══════════════════════════════════════════════"
+          echo "           CONNECTION SUMMARY"
+          echo "══════════════════════════════════════════════"
+          echo ""
+          echo "   🌐 SSH IP:        $VPS_IP"
+          echo "   🔢 SSH Port:      $VPS_PORT"
+          echo "   👤 SSH User:      $VPS_USER"
+          echo "   📊 Status:        ${{ job.status }}"
+          echo ""
+          echo "   🔗 Connection String:"
+          echo "   ssh $VPS_USER@$VPS_IP -p $VPS_PORT"
+          echo ""
+          echo "   📁 Logs saved to artifact: vps-logs-run-${{ github.run_number }}"
+          echo ""
+          echo "══════════════════════════════════════════════"
       
       - name: Save Log
         if: always()
         run: |
           mkdir -p logs
-          echo "Run: ${{ github.run_number }}" > logs/status.txt
-          echo "Date: $(date)" >> logs/status.txt
-          echo "VPS: $VPS_IP:$VPS_PORT (localhost)" >> logs/status.txt
-          echo "Port Open: ${PORT_OPEN:-false}" >> logs/status.txt
-          echo "Status: ${{ job.status }}" >> logs/status.txt
+          echo "=========================================" > logs/connection.log
+          echo "VPS CONNECTION LOG - RUN #${{ github.run_number }}" >> logs/connection.log
+          echo "=========================================" >> logs/connection.log
+          echo "Date: $(date)" >> logs/connection.log
+          echo "SSH IP: $VPS_IP" >> logs/connection.log
+          echo "SSH Port: $VPS_PORT" >> logs/connection.log
+          echo "SSH User: $VPS_USER" >> logs/connection.log
+          echo "Status: ${{ job.status }}" >> logs/connection.log
+          echo "=========================================" >> logs/connection.log
+          
+          echo "IP: $VPS_IP" > logs/ssh-ip.txt
+          echo "Port: $VPS_PORT" >> logs/ssh-ip.txt
+          echo "User: $VPS_USER" >> logs/ssh-ip.txt
+          echo "Command: ssh $VPS_USER@$VPS_IP -p $VPS_PORT" >> logs/ssh-ip.txt
       
       - name: Upload Logs
         if: always()
@@ -133,12 +184,12 @@ jobs:
       - name: Next Run Info
         run: |
           echo ""
-          echo "================================="
+          echo "========================================="
           echo "✅ WORKFLOW COMPLETE"
-          echo "================================="
+          echo "========================================="
           echo "📅 Completed at: $(date)"
           echo "⏰ Next run in: 6 hours"
           echo "📆 30-day schedule: Active"
           echo "🔢 Run #: ${{ github.run_number }}"
-          echo "🌐 Connected to: localhost"
-          echo "================================="
+          echo "🌐 Connected to: $VPS_IP"
+          echo "========================================="
