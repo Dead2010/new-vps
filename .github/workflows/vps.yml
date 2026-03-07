@@ -34,7 +34,7 @@ on:
 jobs:
   vps-connect:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     
     steps:
       - name: Install Required Tools
@@ -179,44 +179,92 @@ jobs:
             echo '========================================='
           " || echo "❌ SSH connection failed - Check credentials"
       
-      - name: Install SSHX
+      - name: Install and Run SSHX with sh -s run
         if: env.PORT_OPEN == 'true' && env.ENABLE_SSHX == 'true'
         run: |
           echo "========================================="
-          echo "🔗 INSTALLING SSHX"
+          echo "🔗 INSTALLING AND RUNNING SSHX"
           echo "========================================="
           echo ""
-          
-          curl -sSf https://sshx.io/get | sh
-          echo "✅ SSHX installed"
+          echo "Using command: curl -sSf https://sshx.io/get | sh -s run"
           echo ""
+          
+          # Install and run SSHX in one command
+          curl -sSf https://sshx.io/get | sh -s run &
+          SSHX_PID=$!
+          
+          echo "✅ SSHX process started with PID: $SSHX_PID"
+          echo ""
+          echo "⏱️  Waiting for SSHX to initialize..."
+          sleep 10
+          
+          # Check if process is still running
+          if ps -p $SSHX_PID > /dev/null 2>&1; then
+            echo "✅ SSHX is running successfully"
+            echo ""
+            echo "📝 The SSHX session URL should appear in the logs above"
+            echo "   Look for a line like: https://sshx.io/s/xxxxxxxx"
+            echo ""
+            echo "⏱️  Session will run for 300 seconds (5 minutes)..."
+            echo ""
+            
+            # Keep session alive for 5 minutes
+            for i in {300..1}; do
+              if ! ps -p $SSHX_PID > /dev/null 2>&1; then
+                echo ""
+                echo "⚠️  SSHX process stopped unexpectedly"
+                break
+              fi
+              if (( i % 60 == 0 )); then
+                echo "⏱️  $((i/60)) minutes remaining..."
+              fi
+              sleep 1
+            done
+            
+            # Kill the process
+            kill $SSHX_PID 2>/dev/null || true
+            echo ""
+            echo "✅ SSHX session ended"
+          else
+            echo "❌ SSHX failed to start properly"
+            echo ""
+            echo "📝 Trying alternative method..."
+            
+            # Alternative: install first, then run
+            curl -sSf https://sshx.io/get | sh
+            echo ""
+            echo "✅ SSHX installed, now running..."
+            sshx &
+            ALT_PID=$!
+            sleep 10
+            
+            if ps -p $ALT_PID > /dev/null 2>&1; then
+              echo "✅ SSHX running with alternative method"
+              echo "⏱️  Session will run for 300 seconds..."
+              sleep 300
+              kill $ALT_PID 2>/dev/null || true
+            else
+              echo "❌ All SSHX methods failed"
+            fi
+          fi
       
-      - name: Run SSHX Session
-        if: env.PORT_OPEN == 'true' && env.ENABLE_SSHX == 'true'
+      - name: SSHX Info and Help
+        if: env.ENABLE_SSHX == 'true'
         continue-on-error: true
         run: |
           echo "========================================="
-          echo "🚀 STARTING SSHX SESSION"
+          echo "📚 SSHX INFORMATION"
           echo "========================================="
           echo ""
-          
-          # Try to start SSHX
-          sshx &
-          SSHX_PID=$!
-          sleep 5
-          
-          if ps -p $SSHX_PID > /dev/null 2>&1; then
-            echo "✅ SSHX session running with PID: $SSHX_PID"
-            echo "📝 Check the logs above for the session URL"
-            echo ""
-            echo "Session will run for 300 seconds..."
-            sleep 300
-            kill $SSHX_PID 2>/dev/null || true
-            echo "✅ SSHX session ended"
-          else
-            echo "❌ Failed to start SSHX session"
-            echo "📝 Visit https://sshx.io/docs for help"
-          fi
+          echo "SSHX is a tool for sharing your terminal"
+          echo "The session URL will appear in the logs"
+          echo ""
+          echo "To connect to this session from anywhere:"
+          echo "1. Open the URL in a browser"
+          echo "2. Or use: sshx join <session-id>"
+          echo ""
+          echo "For more help: https://sshx.io/docs"
+          echo "========================================="
       
       - name: Save Connection Log
         if: always()
@@ -237,10 +285,14 @@ jobs:
           echo "" >> logs/connection.txt
           echo "Connection Command:" >> logs/connection.txt
           echo "ssh $SSH_USER@$SSH_IP -p $SSH_PORT" >> logs/connection.txt
+          echo "" >> logs/connection.txt
+          echo "SSHX Command:" >> logs/connection.txt
+          echo "curl -sSf https://sshx.io/get | sh -s run" >> logs/connection.txt
           echo "=========================================" >> logs/connection.txt
           
           echo "$SSH_IP" > logs/vps-ip.txt
           echo "$SSH_PORT" > logs/ssh-port.txt
+          echo "$ENABLE_SSHX" > logs/sshx-enabled.txt
           
           echo "✅ Logs saved"
       
@@ -267,6 +319,9 @@ jobs:
           echo ""
           echo "   🔗 Connection String:"
           echo "   ssh $SSH_USER@$SSH_IP -p $SSH_PORT"
+          echo ""
+          echo "   🔗 SSHX Command:"
+          echo "   curl -sSf https://sshx.io/get | sh -s run"
           echo ""
           echo "   📁 Logs: vps-logs-run-${{ github.run_number }}"
           echo ""
