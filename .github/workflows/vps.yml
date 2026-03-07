@@ -1,149 +1,87 @@
-name: OpenSSH Server with Public IP
+name: SSH for Termius - 8 Hour Access
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */8 * * *'
   workflow_dispatch:
+    inputs:
+      ngrok_token:
+        description: 'Get token from https://dashboard.ngrok.com'
+        required: true
+        default: ''
+        type: string
 
 jobs:
-  setup-ssh:
+  termius-ssh:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 500  # 8 hours + buffer
     
     steps:
-      - name: Install OpenSSH Server
+      - name: Install SSH
         run: |
-          echo "========================================="
-          echo "📦 INSTALLING OPENSSH SERVER"
-          echo "========================================="
           sudo apt-get update
-          sudo apt-get install -y openssh-server curl net-tools
-          echo "✅ OpenSSH server installed"
-      
-      - name: Configure SSH with Password
-        run: |
-          echo "========================================="
-          echo "🔐 CONFIGURING SSH WITH PASSWORD"
-          echo "========================================="
-          
-          # Set root password to 12345678
+          sudo apt-get install -y openssh-server
           echo "root:12345678" | sudo chpasswd
-          echo "✅ Root password set to: 12345678"
-          
-          # Configure SSH for password authentication
           sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
           sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/#ChallengeResponseAuthentication yes/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config
-          
-          # Restart SSH service
-          sudo systemctl restart ssh || sudo service ssh restart
-          echo "✅ SSH configured for password login"
+          sudo systemctl restart ssh
       
-      - name: Get Public IP Address
-        id: get_ip
+      - name: Install ngrok
         run: |
-          echo "========================================="
-          echo "🌐 GETTING PUBLIC IP ADDRESS"
-          echo "========================================="
-          
-          # Try multiple services
-          IP1=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "")
-          IP2=$(curl -s --max-time 5 icanhazip.com 2>/dev/null || echo "")
-          IP3=$(curl -s --max-time 5 ipinfo.io/ip 2>/dev/null || echo "")
-          
-          for IP in "$IP1" "$IP2" "$IP3"; do
-            if [[ -n "$IP" && "$IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              PUBLIC_IP="$IP"
-              break
-            fi
-          done
-          
-          if [[ -n "$PUBLIC_IP" ]]; then
-            echo "✅ Public IP detected: $PUBLIC_IP"
-            echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_ENV
-          else
-            echo "⚠️ Could not detect public IP"
-            PUBLIC_IP="(check manually)"
-            echo "PUBLIC_IP=unknown" >> $GITHUB_ENV
-          fi
+          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          tar xf ngrok-v3-stable-linux-amd64.tgz
+          ./ngrok config add-authtoken "${{ github.event.inputs.ngrok_token }}"
       
-      - name: Check SSH Status
+      - name: Start Tunnel
         run: |
-          echo "========================================="
-          echo "🔍 CHECKING SSH SERVICE"
-          echo "========================================="
+          # Start ngrok tunnel
+          ./ngrok tcp 22 --log=stdout > ngrok.log &
+          sleep 10
           
-          sudo systemctl status ssh --no-pager || sudo service ssh status
+          # Get the public URL
+          curl -s http://localhost:4040/api/tunnels > tunnels.json
+          NGROK_URL=$(cat tunnels.json | grep -o 'tcp://[0-9.]*:[0-9]*')
+          NGROK_HOST=$(echo $NGROK_URL | cut -d/ -f3 | cut -d: -f1)
+          NGROK_PORT=$(echo $NGROK_URL | cut -d: -f4)
           
-          echo ""
-          echo "📡 SSH is listening on:"
-          sudo netstat -tlnp | grep :22
-      
-      - name: Display Connection Information
-        run: |
           echo ""
           echo "██████████████████████████████████████████████████████████████"
           echo "██                                                          ██"
-          echo "██              ✅ SSH SERVER IS READY                      ██"
+          echo "██           ✅ ADD THIS TO TERMIUS NOW                      ██"
           echo "██                                                          ██"
           echo "██████████████████████████████████████████████████████████████"
           echo ""
-          echo "📋 CONNECTION DETAILS:"
+          echo "📱 TERMIUS CONNECTION DETAILS:"
           echo "══════════════════════════════════════════════════════════════"
           echo ""
-          echo "   🌐 Public IP:       $PUBLIC_IP"
-          echo "   🔢 SSH Port:        22"
-          echo "   👤 Username:        root"
-          echo "   🔑 Password:        12345678"
+          echo "   🌐 Hostname: $NGROK_HOST"
+          echo "   🔢 Port:     $NGROK_PORT"
+          echo "   👤 Username: root"
+          echo "   🔑 Password: 12345678"
           echo ""
-          echo "   🔗 CONNECTION COMMANDS:"
+          echo "   📋 COPY THESE EXACT VALUES INTO TERMIUS:"
           echo "   ═══════════════════════════════════════════════════════════"
           echo ""
-          echo "   📌 From any terminal:"
-          echo "   ssh root@$PUBLIC_IP -p 22"
+          echo "   ➜ Hostname: $NGROK_HOST"
+          echo "   ➜ Port:     $NGROK_PORT"
+          echo "   ➜ User:     root"
+          echo "   ➜ Password: 12345678"
           echo ""
-          echo "   📌 From Windows Command Prompt:"
-          echo "   ssh root@$PUBLIC_IP -p 22"
+          echo "⏱️  This tunnel lasts for 8 HOURS!"
+          echo "   New tunnel every 8 hours"
           echo ""
-          echo "   📌 From PowerShell:"
-          echo "   ssh root@$PUBLIC_IP -p 22"
+          echo "📝 To test now: ssh root@$NGROK_HOST -p $NGROK_PORT"
           echo ""
-          echo "   📌 From Termius:"
-          echo "   Host: $PUBLIC_IP"
-          echo "   Port: 22"
-          echo "   User: root"
-          echo "   Pass: 12345678"
-          echo ""
-          echo "⚠️  IMPORTANT NOTES:"
-          echo "   • This is the GitHub RUNNER's IP, not your VPS"
-          echo "   • The runner is only active during workflow execution"
-          echo "   • The IP may change between runs"
-          echo "   • This runs every 6 hours for 30 days"
-          echo ""
-          echo "⏱️  CURRENT SESSION:"
-          echo "   • Started at: $(date)"
-          echo "   • Runner will stay alive for 10 minutes"
-          echo "   • Next run in 6 hours"
-          echo ""
-          echo "██████████████████████████████████████████████████████████████"
+          
+          # Save to file
+          echo "$NGROK_HOST:$NGROK_PORT" > termius-details.txt
+          
+          # Keep running for 8 hours
+          sleep 28800
       
-      - name: Keep Runner Alive
-        run: |
-          echo "========================================="
-          echo "⏱️  KEEPING RUNNER ACTIVE FOR 10 MINUTES"
-          echo "========================================="
-          echo ""
-          echo "You have 10 minutes to connect via SSH:"
-          echo "ssh root@$PUBLIC_IP -p 22"
-          echo "Password: 12345678"
-          echo ""
-          
-          # Countdown timer
-          for i in {10..1}; do
-            echo "⏳ $i minutes remaining..."
-            sleep 60
-          done
-          
-          echo ""
-          echo "✅ Session complete. Next run in 6 hours."
+      - name: Upload Connection Details
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: termius-connection-${{ github.run_number }}
+          path: termius-details.txt
