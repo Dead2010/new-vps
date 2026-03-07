@@ -19,63 +19,135 @@ jobs:
       - name: Set VPS Details
         run: |
           # !!! REPLACE WITH YOUR ACTUAL VPS IP !!!
-          VPS_IP="YOUR_VPS_IP_HERE"
+          VPS_IP="YOUR_ACTUAL_VPS_IP"
+          VPS_PORT="22"
           VPS_USER="root"
           VPS_PASS="root"
           
           echo "VPS_IP=$VPS_IP" >> $GITHUB_ENV
+          echo "VPS_PORT=$VPS_PORT" >> $GITHUB_ENV
           echo "VPS_USER=$VPS_USER" >> $GITHUB_ENV
           echo "VPS_PASS=$VPS_PASS" >> $GITHUB_ENV
           
           echo "================================="
-          echo "VPS Connection Details:"
-          echo "IP: $VPS_IP"
-          echo "User: $VPS_USER"
+          echo "✅ VPS CONNECTION DETAILS"
           echo "================================="
+          echo "📌 IP Address: $VPS_IP"
+          echo "🔌 SSH Port:   $VPS_PORT"
+          echo "👤 Username:   $VPS_USER"
+          echo "🔑 Password:   [HIDDEN]"
+          echo "================================="
+          
+          if [[ "$VPS_IP" == "YOUR_ACTUAL_VPS_IP" ]]; then
+            echo ""
+            echo "❌ ERROR: You haven't set your VPS IP!"
+            echo "   Please edit this file and replace:"
+            echo "   YOUR_ACTUAL_VPS_IP with your real VPS IP"
+            echo ""
+            exit 1
+          fi
       
       - name: Test Connection
         run: |
-          echo "Testing connection to $VPS_IP at $(date)"
-          ping -c 1 -W 3 $VPS_IP > /dev/null 2>&1 && echo "✅ VPS is reachable" || echo "⚠️ VPS not responding to ping"
+          echo "================================="
+          echo "🔍 TESTING CONNECTION"
+          echo "================================="
+          echo "Testing $VPS_IP on port $VPS_PORT..."
+          
+          if nc -zv -w 5 $VPS_IP $VPS_PORT 2>&1 | grep -q "succeeded"; then
+            echo "✅ Port $VPS_PORT is open"
+          else
+            echo "❌ Cannot connect to $VPS_IP on port $VPS_PORT"
+            echo ""
+            echo "Please check:"
+            echo "  • VPS is running"
+            echo "  • SSH service is enabled"
+            echo "  • Firewall allows port 22"
+            echo "  • IP address is correct"
+            exit 1
+          fi
       
       - name: Connect to VPS
         run: |
           echo "================================="
-          echo "Connecting to VPS at $(date)"
+          echo "🚀 CONNECTING TO VPS"
           echo "================================="
+          echo "Time: $(date)"
+          echo ""
           
           sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no \
             -o ConnectTimeout=10 \
+            -p $VPS_PORT \
             $VPS_USER@$VPS_IP "
-            echo '✅ SUCCESSFULLY CONNECTED'
+            echo '✅ SUCCESSFULLY CONNECTED TO VPS'
+            echo '================================='
             echo ''
-            echo '📋 SYSTEM INFORMATION:'
+            echo '📋 SYSTEM INFORMATION'
+            echo '---------------------'
             echo '  Hostname: ' \$(hostname)
             echo '  OS: ' \$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')
             echo '  Kernel: ' \$(uname -r)
             echo '  Uptime: ' \$(uptime -p)
+            echo '  Load: ' \$(uptime | awk -F'load average:' '{print $2}')
             echo ''
-            echo '💾 MEMORY USAGE:'
+            echo '💾 MEMORY USAGE'
+            echo '---------------'
             free -h
             echo ''
-            echo '💽 DISK USAGE:'
+            echo '💽 DISK USAGE'
+            echo '-------------'
             df -h
             echo ''
-            echo '🌐 IP ADDRESSES:'
-            hostname -I
+            echo '🌐 NETWORK INFO'
+            echo '---------------'
+            echo '  IP Addresses: ' \$(hostname -I)
             echo ''
-            echo '👥 LOGGED IN USERS:'
-            who || echo '  No users'
+            echo '  Open Ports:'
+            ss -tuln | grep LISTEN | head -10 | sed 's/^/    /'
             echo ''
-            echo '📅 CURRENT TIME:'
-            date
-          " || echo "❌ Connection failed - Check if VPS is running and IP is correct"
+            echo '👥 USER INFO'
+            echo '------------'
+            echo '  Logged in users:'
+            who | sed 's/^/    /' || echo '    No users logged in'
+            echo ''
+            echo '  Last 5 logins:'
+            last -5 2>/dev/null | sed 's/^/    /' || echo '    Command not available'
+            echo ''
+            echo '⚙️  RUNNING SERVICES'
+            echo '-------------------'
+            systemctl list-units --type=service --state=running --no-pager | head -10 | sed 's/^/    /'
+            echo ''
+            echo '📅 CONNECTION TIME'
+            echo '------------------'
+            echo '  Connected at: ' \$(date)
+            echo '================================='
+          " || echo "❌ Connection failed"
+      
+      - name: Save Log
+        if: always()
+        run: |
+          mkdir -p logs
+          echo "Run: ${{ github.run_number }}" > logs/status.txt
+          echo "Date: $(date)" >> logs/status.txt
+          echo "VPS: $VPS_IP:$VPS_PORT" >> logs/status.txt
+          echo "Status: ${{ job.status }}" >> logs/status.txt
+      
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vps-logs-run-${{ github.run_number }}
+          path: logs/
+          retention-days: 30
       
       - name: Next Run Info
         run: |
           echo ""
           echo "================================="
-          echo "✅ Workflow completed at $(date)"
-          echo "⏰ Next run in 6 hours"
-          echo "📅 Will run for 30 days"
+          echo "✅ WORKFLOW COMPLETE"
+          echo "================================="
+          echo "📅 Completed at: $(date)"
+          echo "⏰ Next run in: 6 hours"
+          echo "📆 30-day schedule: Active"
+          echo "🔢 Run #: ${{ github.run_number }}"
           echo "================================="
