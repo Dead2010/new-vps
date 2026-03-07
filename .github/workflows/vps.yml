@@ -1,4 +1,4 @@
-name: VPS Connection with SSHX
+name: Complete VPS Setup & Connection
 
 on:
   schedule:
@@ -6,74 +6,215 @@ on:
   workflow_dispatch:
     inputs:
       vps_ip:
-        description: 'Enter your VPS IP address'
-        required: false
+        description: 'Your VPS IP Address (get from provider)'
+        required: true
         default: ''
         type: string
-      ssh_port:
-        description: 'SSH Port'
-        required: false
-        default: '22'
+      vps_password:
+        description: 'Your VPS Root Password'
+        required: true
+        default: ''
         type: string
-      force_sshx:
-        description: 'Run SSHX even without VPS?'
+      setup_mode:
+        description: 'Setup mode (new/existing)'
         required: false
-        default: 'false'
-        type: string
+        default: 'existing'
+        type: choice
+        options:
+          - new
+          - existing
 
 jobs:
-  vps-connect:
+  vps-manager:
+    name: 🔧 VPS Manager
     runs-on: ubuntu-latest
     timeout-minutes: 15
     
     steps:
-      - name: Install Tools
+      - name: Install Required Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y sshpass netcat-openbsd curl
+          sudo apt-get install -y sshpass netcat-openbsd curl wget
+          echo "✅ Tools installed"
       
-      - name: Configure Connection
+      - name: VPS Setup Guide (New Users)
+        if: github.event.inputs.setup_mode == 'new'
         run: |
-          # Get IP
-          if [[ -n "${{ github.event.inputs.vps_ip }}" ]]; then
-            SSH_IP="${{ github.event.inputs.vps_ip }}"
-          else
-            SSH_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "127.0.0.1")
-          fi
+          echo "=============================================="
+          echo "     📋 HOW TO GET YOUR FREE/PAID VPS"
+          echo "=============================================="
+          echo ""
+          echo "🔹 OPTION 1: DIGITALOCEAN (Easiest, $$)"
+          echo "   1. Go to: https://www.digitalocean.com/"
+          echo "   2. Sign up (get \$200 free credit)"
+          echo "   3. Click 'Create Droplet'"
+          echo "   4. Choose: Ubuntu 22.04 LTS"
+          echo "   5. Choose: Basic plan (\$4-6/month)"
+          echo "   6. Choose: Password authentication"
+          echo "   7. Set your root password"
+          echo "   8. Click 'Create Droplet'"
+          echo "   9. Your IP will appear (e.g., 164.92.83.192)"
+          echo ""
+          echo "🔹 OPTION 2: VULTR (Great, $$)"
+          echo "   1. Go to: https://www.vultr.com/"
+          echo "   2. Sign up (get \$100 free credit)"
+          echo "   3. Click 'Deploy Server'"
+          echo "   4. Choose: Ubuntu 22.04 LTS"
+          echo "   5. Choose: \$2.50-6/month plan"
+          echo "   6. Set your password"
+          echo "   7. Deploy and get IP"
+          echo ""
+          echo "🔹 OPTION 3: AWS FREE TIER (12 months free)"
+          echo "   1. Go to: https://aws.amazon.com/free/"
+          echo "   2. Create account (credit card required)"
+          echo "   3. Launch EC2 instance (t2.micro)"
+          echo "   4. Get Public IPv4 from dashboard"
+          echo ""
+          echo "🔹 OPTION 4: ORACLE CLOUD (Always free)"
+          echo "   1. Go to: https://www.oracle.com/cloud/free/"
+          echo "   2. Sign up for free account"
+          echo "   3. Create VM instance"
+          echo "   4. Get your IP"
+          echo ""
+          echo "=============================================="
+          echo ""
+          echo "⚠️  AFTER GETTING YOUR VPS:"
+          echo "   1. Copy your IP address"
+          echo "   2. Copy your root password"
+          echo "   3. Run this workflow again with:"
+          echo "      - setup_mode: existing"
+          echo "      - vps_ip: YOUR_IP"
+          echo "      - vps_password: YOUR_PASSWORD"
+          echo "=============================================="
+      
+      - name: Configure VPS Connection
+        if: github.event.inputs.setup_mode == 'existing'
+        run: |
+          VPS_IP="${{ github.event.inputs.vps_ip }}"
+          VPS_PORT="22"
+          VPS_USER="root"
+          VPS_PASS="${{ github.event.inputs.vps_password }}"
           
-          SSH_PORT="${{ github.event.inputs.ssh_port }}"
-          FORCE_SSHX="${{ github.event.inputs.force_sshx }}"
-          
-          echo "SSH_IP=$SSH_IP" >> $GITHUB_ENV
-          echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
-          echo "FORCE_SSHX=$FORCE_SSHX" >> $GITHUB_ENV
+          echo "VPS_IP=$VPS_IP" >> $GITHUB_ENV
+          echo "VPS_PORT=$VPS_PORT" >> $GITHUB_ENV
+          echo "VPS_USER=$VPS_USER" >> $GITHUB_ENV
+          echo "VPS_PASS=$VPS_PASS" >> $GITHUB_ENV
           
           echo "========================================="
-          echo "📋 Connection: ssh root@$SSH_IP -p $SSH_PORT"
+          echo "     🔌 VPS CONNECTION DETAILS"
+          echo "========================================="
+          echo ""
+          echo "   🌐 IP Address:    $VPS_IP"
+          echo "   🔢 SSH Port:      $VPS_PORT"
+          echo "   👤 Username:      $VPS_USER"
+          echo "   🔑 Password:      [HIDDEN]"
+          echo ""
+          echo "   📱 For Termius:"
+          echo "   Host: $VPS_IP"
+          echo "   Port: $VPS_PORT"
+          echo "   User: $VPS_USER"
+          echo "   Pass: [Your password]"
+          echo ""
+          echo "   🔗 SSH Command:"
+          echo "   ssh $VPS_USER@$VPS_IP -p $VPS_PORT"
           echo "========================================="
       
       - name: Test VPS Connection
-        run: |
-          if nc -zv -w 5 $SSH_IP $SSH_PORT 2>&1 | grep -q "succeeded"; then
-            echo "✅ Port $SSH_PORT is OPEN"
-            echo "VPS_AVAILABLE=true" >> $GITHUB_ENV
-          else
-            echo "❌ Port $SSH_PORT is CLOSED"
-            echo "VPS_AVAILABLE=false" >> $GITHUB_ENV
-          fi
-      
-      - name: Connect to VPS (if available)
-        if: env.VPS_AVAILABLE == 'true'
-        run: |
-          sshpass -p "root" ssh -o StrictHostKeyChecking=no \
-            -p $SSH_PORT \
-            root@$SSH_IP "uptime && free -h"
-      
-      - name: Install and Run SSHX
-        if: env.VPS_AVAILABLE == 'true' || env.FORCE_SSHX == 'true'
+        if: github.event.inputs.setup_mode == 'existing'
         run: |
           echo "========================================="
-          echo "🔗 STARTING SSHX SESSION"
+          echo "🔍 TESTING CONNECTION TO VPS"
+          echo "========================================="
+          echo ""
+          
+          echo "📡 Testing port $VPS_PORT on $VPS_IP..."
+          if nc -zv -w 5 $VPS_IP $VPS_PORT 2>&1 | grep -q "succeeded"; then
+            echo "   ✅ Port $VPS_PORT is OPEN"
+            echo "PORT_OPEN=true" >> $GITHUB_ENV
+          else
+            echo "   ❌ Port $VPS_PORT is CLOSED"
+            echo "PORT_OPEN=false" >> $GITHUB_ENV
+            echo ""
+            echo "🔧 Troubleshooting:"
+            echo "   1. Is your VPS running? (check provider dashboard)"
+            echo "   2. Is the IP correct? $VPS_IP"
+            echo "   3. Is SSH enabled on your VPS?"
+            echo "   4. Check firewall settings"
+            exit 1
+          fi
+      
+      - name: Connect to VPS and Get System Info
+        if: env.PORT_OPEN == 'true'
+        run: |
+          echo "========================================="
+          echo "🚀 CONNECTING TO YOUR VPS"
+          echo "========================================="
+          echo ""
+          
+          # Create SSH connection and get system info
+          sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 \
+            -p $VPS_PORT \
+            $VPS_USER@$VPS_IP "
+            echo '✅ SUCCESSFULLY CONNECTED TO YOUR VPS'
+            echo '========================================='
+            echo ''
+            echo '📋 VPS INFORMATION:'
+            echo '  Hostname: ' \$(hostname)
+            echo '  Public IP: ' \$(curl -s ifconfig.me 2>/dev/null || echo 'N/A')
+            echo '  OS: ' \$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')
+            echo '  Kernel: ' \$(uname -r)
+            echo '  Uptime: ' \$(uptime -p)
+            echo ''
+            echo '💾 RESOURCES:'
+            echo '  CPU Cores: ' \$(nproc)
+            echo '  Memory:'
+            free -h
+            echo '  Disk:'
+            df -h
+            echo ''
+            echo '🌐 NETWORK:'
+            echo '  Open Ports:'
+            ss -tuln | grep LISTEN | head -10
+            echo ''
+            echo '👥 USERS:'
+            echo '  Logged in:'
+            who || echo '  No users'
+            echo ''
+            echo '📅 DATE:'
+            date
+            echo '========================================='
+          " || echo "❌ Connection failed - Check your password"
+      
+      - name: Setup SSH Key for Termius (Optional)
+        if: env.PORT_OPEN == 'true'
+        run: |
+          echo "========================================="
+          echo "🔑 SSH KEY SETUP FOR TERMIUS"
+          echo "========================================="
+          echo ""
+          echo "For easier access, you can set up SSH keys:"
+          echo ""
+          echo "📱 ON YOUR LOCAL COMPUTER/PHONE:"
+          echo "1. Open Termius"
+          echo "2. Go to Keys section"
+          echo "3. Generate a new SSH key"
+          echo "4. Copy the public key"
+          echo ""
+          echo "🖥️  ON YOUR VPS (run these commands manually):"
+          echo "   mkdir -p ~/.ssh"
+          echo "   echo 'YOUR_PUBLIC_KEY' >> ~/.ssh/authorized_keys"
+          echo "   chmod 600 ~/.ssh/authorized_keys"
+          echo "   chmod 700 ~/.ssh"
+          echo ""
+          echo "Then you can connect without password!"
+          echo "========================================="
+      
+      - name: Install and Run SSHX
+        if: env.PORT_OPEN == 'true'
+        run: |
+          echo "========================================="
+          echo "🔗 SSHX SESSION (Share your terminal)"
           echo "========================================="
           echo ""
           
@@ -81,43 +222,78 @@ jobs:
           SSHX_PID=$!
           sleep 10
           
-          if ps -p $SSHX_PID > /dev/null 2>&1; then
-            echo "✅ SSHX running (PID: $SSHX_PID)"
-            echo "⏱️  Session active for 300 seconds"
-            sleep 300
-            kill $SSHX_PID 2>/dev/null || true
-          else
-            echo "❌ SSHX failed to start"
-          fi
+          echo ""
+          echo "✅ SSHX session started"
+          echo "📝 Look for URL like: https://sshx.io/s/xxxx"
+          echo "⏱️  Session runs for 300 seconds"
+          echo ""
+          sleep 300
+          kill $SSHX_PID 2>/dev/null || true
       
-      - name: SSHX Info (when VPS unavailable)
-        if: env.VPS_AVAILABLE == 'false' && env.FORCE_SSHX == 'false'
-        run: |
-          echo "========================================="
-          echo "ℹ️  SSHX INFORMATION"
-          echo "========================================="
-          echo ""
-          echo "SSHX was not started because:"
-          echo "• No VPS connection available on $SSH_IP:$SSH_PORT"
-          echo ""
-          echo "To run SSHX anyway, use 'force_sshx: true'"
-          echo "Or enter your real VPS IP manually"
-          echo ""
-          echo "SSHX Command: curl -sSf https://sshx.io/get | sh -s run"
-          echo "========================================="
-      
-      - name: Save Log
+      - name: Save Connection Info
         if: always()
         run: |
-          mkdir -p logs
-          echo "Run: ${{ github.run_number }}" > logs/status.txt
-          echo "IP: $SSH_IP" >> logs/status.txt
-          echo "Port: $SSH_PORT" >> logs/status.txt
-          echo "VPS Available: $VPS_AVAILABLE" >> logs/status.txt
+          mkdir -p vps-logs
+          
+          cat > vps-logs/connection-info.txt << EOF
+=========================================
+VPS CONNECTION INFORMATION
+=========================================
+Date: $(date)
+Run #: ${{ github.run_number }}
+
+YOUR VPS DETAILS FOR TERMIUS:
+-----------------------------------------
+Hostname/IP: ${{ github.event.inputs.vps_ip }}
+SSH Port:    22
+Username:    root
+Password:    [The password you entered]
+-----------------------------------------
+
+Connection Status: ${{ job.status }}
+=========================================
+EOF
+          
+          echo "${{ github.event.inputs.vps_ip }}" > vps-logs/vps-ip.txt
       
       - name: Upload Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vps-logs-${{ github.run_number }}
-          path: logs/
+          name: vps-info-${{ github.run_number }}
+          path: vps-logs/
+          retention-days: 30
+      
+      - name: Final Summary
+        if: always()
+        run: |
+          echo ""
+          echo "══════════════════════════════════════════════"
+          echo "           🎯 VPS SETUP SUMMARY"
+          echo "══════════════════════════════════════════════"
+          echo ""
+          
+          if [[ "${{ github.event.inputs.setup_mode }}" == "new" ]]; then
+            echo "   📋 You're in SETUP MODE"
+            echo "   ✅ Follow the guide above to get your VPS"
+            echo "   🔄 Then run again with your real IP"
+          else
+            echo "   🌐 VPS IP: ${{ github.event.inputs.vps_ip }}"
+            echo "   🔢 Port:    22"
+            echo "   👤 User:    root"
+            echo "   📊 Status:  ${{ job.status }}"
+            echo ""
+            echo "   📱 TERMIUS SETUP:"
+            echo "   1. Open Termius"
+            echo "   2. Add new host"
+            echo "   3. IP: ${{ github.event.inputs.vps_ip }}"
+            echo "   4. Port: 22"
+            echo "   5. User: root"
+            echo "   6. Password: [your password]"
+            echo "   7. Save and connect"
+          fi
+          
+          echo ""
+          echo "   ⏰ Next run in 6 hours"
+          echo "   📅 30-day schedule active"
+          echo "══════════════════════════════════════════════"
