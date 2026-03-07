@@ -1,4 +1,4 @@
-name: RunC VPS - 30 Days
+name: Docker VPS - 30 Days
 
 on:
   schedule:
@@ -6,45 +6,170 @@ on:
   workflow_dispatch:
 
 jobs:
-  runc-vps:
+  create-vps:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     
     steps:
-      - name: Install RunC
+      - name: Install Docker
         run: |
-          sudo apt-get update
-          sudo apt-get install -y runc
+          curl -fsSL https://get.docker.com -o get-docker.sh
+          sudo sh get-docker.sh
+          sudo usermod -aG docker $USER
+          docker version
       
-      - name: Create RunC Container
+      - name: Check Available Ports
         run: |
-          mkdir -p rootfs
-          docker export $(docker create ubuntu:22.04) | tar -C rootfs -xvf -
+          echo "Checking which ports are available..."
+          sudo netstat -tlnp | grep LISTEN
+          echo ""
+          echo "✅ Ports 2222, 8080, 8888 should be free"
+      
+      - name: Create Ubuntu Container with Different Ports
+        run: |
+          # Pull Ubuntu image
+          docker pull ubuntu:22.04
           
-          cat > config.json << 'EOF'
-          {
-            "ociVersion": "1.0.0",
-            "process": {
-              "terminal": true,
-              "user": {"uid": 0, "gid": 0},
-              "args": ["/bin/bash", "-c", "service ssh start && sleep infinity"],
-              "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
-            },
-            "root": {
-              "path": "rootfs",
-              "readonly": false
-            },
-            "hostname": "vps",
-            "linux": {
-              "namespaces": [
-                {"type": "pid"},
-                {"type": "network"},
-                {"type": "ipc"},
-                {"type": "uts"},
-                {"type": "mount"}
-              ]
-            }
-          }
-          EOF
+          # Stop and remove any existing container
+          docker stop vps-container 2>/dev/null || true
+          docker rm vps-container 2>/dev/null || true
           
-          sudo runc run vps
+          # Run container with different ports (not using host port 22)
+          docker run -d --name vps-container \
+            -p 2222:22 \
+            -p 8080:80 \
+            -p 8443:443 \
+            -p 8888:8080 \
+            ubuntu:22.04 \
+            bash -c "
+              apt-get update && 
+              apt-get install -y openssh-server curl wget && 
+              echo 'root:12345678' | chpasswd && 
+              sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && 
+              sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && 
+              service ssh start && 
+              tail -f /dev/null
+            "
+          
+          echo "✅ Container created successfully"
+          docker ps
+      
+      - name: Install SSH Client in Container
+        run: |
+          docker exec vps-container apt-get install -y openssh-server
+          docker exec vps-container service ssh restart
+          echo "✅ SSH configured in container"
+      
+      - name: Get Container IP
+        id: container_ip
+        run: |
+          CONTAINER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' vps-container)
+          echo "CONTAINER_IP=$CONTAINER_IP" >> $GITHUB_ENV
+          echo "Container IP: $CONTAINER_IP"
+          echo ""
+          echo "Container is accessible locally via:"
+          echo "  • docker exec -it vps-container bash"
+          echo "  • ssh root@localhost -p 2222 (from runner)"
+      
+      - name: Install Cloudflare Tunnel
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          echo "✅ Cloudflared installed"
+      
+      - name: Create Tunnel to Container SSH
+        run: |
+          # Create tunnel to the container's SSH port (2222 on host)
+          cloudflared tunnel --url ssh://localhost:2222 > tunnel.log 2>&1 &
+          TUNNEL_PID=$!
+          sleep 15
+          
+          TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
+          HOSTNAME=$(echo $TUNNEL_URL | sed 's|https://||')
+          
+          echo ""
+          echo "██████████████████████████████████████████████████████████████"
+          echo "██                                                          ██"
+          echo "██           ✅ YOUR VPS IS READY                           ██"
+          echo "██                                                          ██"
+          echo "██████████████████████████████████████████████████████████████"
+          echo ""
+          echo "📱 TERMIUS CONNECTION DETAILS:"
+          echo "══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "   🌐 Hostname: $HOSTNAME"
+          echo "   🔢 Port:     22"
+          echo "   👤 Username: root"
+          echo "   🔑 Password: 12345678"
+          echo ""
+          echo "   📋 COPY THESE EXACT VALUES INTO TERMIUS"
+          echo ""
+          echo "🔗 Direct SSH Command:"
+          echo "   ssh root@$HOSTNAME -p 22"
+          echo ""
+          echo "🖥️  Local Access (from runner):"
+          echo "   ssh root@localhost -p 2222"
+          echo ""
+          echo "🌐 Web Panel Access (when installed):"
+          echo "   http://$HOSTNAME:8080 (if you install a web panel)"
+          echo ""
+          echo "⏱️  Session active for: 6 HOURS"
+          echo "   Next session in 6 hours"
+          echo "   30-day total: 120 sessions"
+          echo ""
+          echo "📝 TUNNEL URL: $TUNNEL_URL"
+          echo ""
+          
+          # Save to file
+          echo "$HOSTNAME" > vps-hostname.txt
+          echo "root" > vps-username.txt
+          echo "12345678" > vps-password.txt
+          
+          sleep 21600  # 6 hours
+          kill $TUNNEL_PID
+      
+      - name: Create Tunnel to Web Port (Optional)
+        if: always()
+        run: |
+          # Create another tunnel for web access (port 8080)
+          cloudflared tunnel --url http://localhost:8080 > web-tunnel.log 2>&1 &
+          WEB_TUNNEL_PID=$!
+          sleep 10
+          
+          WEB_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' web-tunnel.log | head -1)
+          
+          echo ""
+          echo "🌐 Web Access Tunnel (if you install a web panel):"
+          echo "   $WEB_URL"
+          echo ""
+          echo "$WEB_URL" > web-url.txt
+          
+          # This will run alongside the SSH tunnel
+          wait $WEB_TUNNEL_PID
+      
+      - name: Upload Connection Details
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vps-connection-${{ github.run_number }}
+          path: |
+            vps-hostname.txt
+            vps-username.txt
+            vps-password.txt
+            web-url.txt
+          retention-days: 30
+      
+      - name: Keep Container Alive
+        if: always()
+        run: |
+          echo ""
+          echo "========================================="
+          echo "✅ SESSION COMPLETE"
+          echo "========================================="
+          echo "Container logs:"
+          docker logs vps-container --tail 20
+          echo ""
+          echo "Cleaning up..."
+          docker stop vps-container
+          docker rm vps-container
