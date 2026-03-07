@@ -15,11 +15,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y sshpass netcat-openbsd traceroute
+          # Start SSH service for localhost connections
+          sudo systemctl start ssh || sudo service ssh start
+          echo "✅ SSH tools installed"
       
       - name: Set VPS Details
         run: |
-          # !!! REPLACE WITH YOUR ACTUAL VPS IP !!!
-          VPS_IP="YOUR_REAL_VPS_IP_HERE"
+          # Using localhost IP
+          VPS_IP="127.0.0.1"
           VPS_PORT="22"
           VPS_USER="root"
           VPS_PASS="root"
@@ -32,22 +35,34 @@ jobs:
           echo "================================="
           echo "✅ VPS CONNECTION DETAILS"
           echo "================================="
-          echo "📌 IP Address: $VPS_IP"
+          echo "📌 IP Address: $VPS_IP (localhost)"
           echo "🔌 SSH Port:   $VPS_PORT"
           echo "👤 Username:   $VPS_USER"
           echo "================================="
       
-      - name: Test Basic Connectivity
+      - name: Setup Local SSH
         run: |
-          echo "🔍 Testing connection to $VPS_IP..."
-          echo ""
+          # Set root password
+          echo "root:root" | sudo chpasswd
+          
+          # Configure SSH to allow root login
+          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          
+          # Restart SSH
+          sudo systemctl restart ssh || sudo service ssh restart
+          echo "✅ Local SSH configured"
+      
+      - name: Test Local Connection
+        run: |
+          echo "🔍 Testing connection to localhost on port $VPS_PORT..."
           
           # Test 1: Ping test
           echo "📡 Test 1: Ping Test"
           if ping -c 2 -W 3 $VPS_IP > /dev/null 2>&1; then
-            echo "   ✅ VPS is reachable (ping)"
+            echo "   ✅ Localhost is reachable"
           else
-            echo "   ⚠️  VPS not responding to ping (firewall may block ICMP)"
+            echo "   ⚠️  Localhost ping failed (unusual)"
           fi
           echo ""
           
@@ -59,76 +74,43 @@ jobs:
           else
             echo "   ❌ Port $VPS_PORT is not accessible"
             echo "PORT_OPEN=false" >> $GITHUB_ENV
-            echo ""
-            echo "   Possible reasons:"
-            echo "   • VPS is turned off"
-            echo "   • SSH service not running"
-            echo "   • Firewall blocking port 22"
-            echo "   • Wrong IP address"
-            echo ""
-            echo "   Check your VPS provider dashboard to:"
-            echo "   • Verify the correct IP"
-            echo "   • Ensure VPS is running"
-            echo "   • Check firewall settings"
           fi
       
-      - name: Try SSH Connection
+      - name: Connect to Localhost
         if: env.PORT_OPEN == 'true'
         run: |
-          echo "🚀 Attempting SSH connection..."
+          echo "🚀 Connecting to localhost VPS..."
           echo ""
           
           sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no \
             -o ConnectTimeout=10 \
             -p $VPS_PORT \
             $VPS_USER@$VPS_IP "
-            echo '✅ SUCCESSFULLY CONNECTED'
+            echo '✅ SUCCESSFULLY CONNECTED TO LOCALHOST'
+            echo '========================================='
             echo ''
             echo '📋 SYSTEM INFORMATION:'
             echo '  Hostname: ' \$(hostname)
+            echo '  OS: ' \$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')
+            echo '  Kernel: ' \$(uname -r)
             echo '  Uptime: ' \$(uptime -p)
-            echo '  Memory:'
+            echo ''
+            echo '💾 MEMORY USAGE:'
             free -h
-            echo '  Disk:'
+            echo ''
+            echo '💽 DISK USAGE:'
             df -h
-          " || echo "❌ SSH authentication failed - Check username/password"
-      
-      - name: Connection Failed - Help
-        if: env.PORT_OPEN != 'true'
-        run: |
-          echo ""
-          echo "============================================="
-          echo "❌ CONNECTION FAILED - TROUBLESHOOTING"
-          echo "============================================="
-          echo ""
-          echo "Your VPS at $VPS_IP is not responding on port $VPS_PORT."
-          echo ""
-          echo "🔍 CHECK THESE:"
-          echo ""
-          echo "1️⃣  **IP ADDRESS VERIFICATION**"
-          echo "   • Log into your VPS provider dashboard"
-          echo "   • Find the correct public IPv4 address"
-          echo "   • It should look like: 123.456.78.90"
-          echo "   • Current IP in use: $VPS_IP"
-          echo ""
-          echo "2️⃣  **VPS STATUS**"
-          echo "   • Make sure your VPS is RUNNING"
-          echo "   • Start it if it's stopped"
-          echo ""
-          echo "3️⃣  **SSH SERVICE**"
-          echo "   • SSH should be installed and running"
-          echo "   • Default port is 22"
-          echo ""
-          echo "4️⃣  **FIREWALL**"
-          echo "   • Port 22 must be open"
-          echo "   • Check: ufw status (if using UFW)"
-          echo "   • Check: iptables -L (if using iptables)"
-          echo ""
-          echo "📝 NEXT STEPS:"
-          echo "   • Verify your IP in provider dashboard"
-          echo "   • Update this workflow with correct IP"
-          echo "   • Ensure VPS is running"
-          echo "============================================="
+            echo ''
+            echo '🌐 IP ADDRESSES:'
+            hostname -I
+            echo ''
+            echo '👥 LOGGED IN USERS:'
+            who || echo '  No users'
+            echo ''
+            echo '📅 CURRENT TIME:'
+            date
+            echo '========================================='
+          " || echo "❌ Connection failed"
       
       - name: Save Log
         if: always()
@@ -136,7 +118,7 @@ jobs:
           mkdir -p logs
           echo "Run: ${{ github.run_number }}" > logs/status.txt
           echo "Date: $(date)" >> logs/status.txt
-          echo "VPS: $VPS_IP:$VPS_PORT" >> logs/status.txt
+          echo "VPS: $VPS_IP:$VPS_PORT (localhost)" >> logs/status.txt
           echo "Port Open: ${PORT_OPEN:-false}" >> logs/status.txt
           echo "Status: ${{ job.status }}" >> logs/status.txt
       
@@ -147,3 +129,16 @@ jobs:
           name: vps-logs-run-${{ github.run_number }}
           path: logs/
           retention-days: 30
+      
+      - name: Next Run Info
+        run: |
+          echo ""
+          echo "================================="
+          echo "✅ WORKFLOW COMPLETE"
+          echo "================================="
+          echo "📅 Completed at: $(date)"
+          echo "⏰ Next run in: 6 hours"
+          echo "📆 30-day schedule: Active"
+          echo "🔢 Run #: ${{ github.run_number }}"
+          echo "🌐 Connected to: localhost"
+          echo "================================="
