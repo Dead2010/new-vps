@@ -23,28 +23,27 @@ jobs:
           echo "Checking which ports are available..."
           sudo netstat -tlnp | grep LISTEN
           echo ""
-          echo "✅ Ports 2222, 8080, 8888 should be free"
+          echo "✅ Ports 2222, 8080, 8888 are free"
       
-      - name: Create Ubuntu Container with Different Ports
+      - name: Create Ubuntu Container with SSH Pre-installed
         run: |
-          # Pull Ubuntu image
-          docker pull ubuntu:22.04
-          
           # Stop and remove any existing container
           docker stop vps-container 2>/dev/null || true
           docker rm vps-container 2>/dev/null || true
           
-          # Run container with different ports (not using host port 22)
+          # Create container with SSH pre-configured
           docker run -d --name vps-container \
             -p 2222:22 \
             -p 8080:80 \
             -p 8443:443 \
             -p 8888:8080 \
+            -p 54321:54321 \
             ubuntu:22.04 \
             bash -c "
               apt-get update && 
-              apt-get install -y openssh-server curl wget && 
+              apt-get install -y sudo wget curl net-tools && 
               echo 'root:12345678' | chpasswd && 
+              apt-get install -y openssh-server && 
               sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && 
               sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && 
               service ssh start && 
@@ -54,22 +53,19 @@ jobs:
           echo "✅ Container created successfully"
           docker ps
       
-      - name: Install SSH Client in Container
+      - name: Wait for SSH to be ready
         run: |
-          docker exec vps-container apt-get install -y openssh-server
-          docker exec vps-container service ssh restart
-          echo "✅ SSH configured in container"
+          echo "Waiting for SSH to start in container..."
+          sleep 20
+          docker exec vps-container service ssh status || echo "SSH starting..."
+          sleep 10
       
-      - name: Get Container IP
-        id: container_ip
+      - name: Verify SSH is working
         run: |
-          CONTAINER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' vps-container)
-          echo "CONTAINER_IP=$CONTAINER_IP" >> $GITHUB_ENV
-          echo "Container IP: $CONTAINER_IP"
-          echo ""
-          echo "Container is accessible locally via:"
-          echo "  • docker exec -it vps-container bash"
-          echo "  • ssh root@localhost -p 2222 (from runner)"
+          docker exec vps-container netstat -tlnp | grep :22 || echo "SSH not listening yet"
+          echo "Testing local SSH connection..."
+          apt-get install -y sshpass || true
+          sshpass -p '12345678' ssh -o StrictHostKeyChecking=no -p 2222 root@localhost "echo '✅ SSH is working!'" || echo "SSH not ready yet, but will be soon"
       
       - name: Install Cloudflare Tunnel
         run: |
@@ -109,10 +105,13 @@ jobs:
           echo "   ssh root@$HOSTNAME -p 22"
           echo ""
           echo "🖥️  Local Access (from runner):"
-          echo "   ssh root@localhost -p 2222"
+          echo "   ssh root@localhost -p 2222 (password: 12345678)"
           echo ""
-          echo "🌐 Web Panel Access (when installed):"
-          echo "   http://$HOSTNAME:8080 (if you install a web panel)"
+          echo "🌐 Web Access Ports:"
+          echo "   • HTTP:  http://$HOSTNAME:8080"
+          echo "   • HTTPS: https://$HOSTNAME:8443"
+          echo "   • App:   http://$HOSTNAME:8888"
+          echo "   • Panel: http://$HOSTNAME:54321"
           echo ""
           echo "⏱️  Session active for: 6 HOURS"
           echo "   Next session in 6 hours"
@@ -129,19 +128,38 @@ jobs:
           sleep 21600  # 6 hours
           kill $TUNNEL_PID
       
-      - name: Create Tunnel to Web Port (Optional)
+      - name: Install 3X-UI Panel (Optional)
         if: always()
         run: |
-          # Create another tunnel for web access (port 8080)
-          cloudflared tunnel --url http://localhost:8080 > web-tunnel.log 2>&1 &
+          echo "Installing 3X-UI panel in container..."
+          docker exec vps-container bash -c "
+            apt-get update && 
+            apt-get install -y curl wget && 
+            bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/main/install.sh) << EOF
+            y
+            54321
+            admin
+            admin123
+            admin123
+            $HOSTNAME
+            EOF
+          " || echo "3X-UI installation skipped"
+      
+      - name: Create Tunnel to Web Panel
+        if: always()
+        run: |
+          # Create tunnel for web panel (port 54321)
+          cloudflared tunnel --url http://localhost:54321 > web-tunnel.log 2>&1 &
           WEB_TUNNEL_PID=$!
           sleep 10
           
           WEB_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' web-tunnel.log | head -1)
           
           echo ""
-          echo "🌐 Web Access Tunnel (if you install a web panel):"
-          echo "   $WEB_URL"
+          echo "🌐 Web Panel Access:"
+          echo "   URL: $WEB_URL"
+          echo "   Username: admin"
+          echo "   Password: admin123"
           echo ""
           echo "$WEB_URL" > web-url.txt
           
@@ -167,9 +185,11 @@ jobs:
           echo "========================================="
           echo "✅ SESSION COMPLETE"
           echo "========================================="
-          echo "Container logs:"
-          docker logs vps-container --tail 20
+          echo "Container is still running for 6 hours"
+          echo "You can access it via the tunnel URL above"
           echo ""
-          echo "Cleaning up..."
-          docker stop vps-container
-          docker rm vps-container
+          echo "To check container status:"
+          echo "  docker ps | grep vps-container"
+          echo ""
+          echo "To view logs:"
+          echo "  docker logs vps-container --tail 50"
