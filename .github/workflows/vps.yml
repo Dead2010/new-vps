@@ -1,385 +1,164 @@
-name: 3X-UI Panel Installation - Full Setup
+name: Complete VPS Setup & Connection
 
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
-      panel_ip:
-        description: 'Enter your server IP (or leave empty for auto-detect)'
+      vps_ip:
+        description: 'Your VPS IP Address'
         required: false
         default: ''
         type: string
-      enable_ipv6:
-        description: 'Enable IPv6? (yes/no)'
+      vps_password:
+        description: 'Your VPS Root Password'
         required: false
-        default: 'no'
+        default: ''
         type: string
-      web_port:
-        description: 'Web panel port (default: 54321)'
+      setup_mode:
+        description: 'Setup mode (new/existing)'
         required: false
-        default: '54321'
-        type: string
+        default: 'new'
+        type: choice
+        options:
+          - new
+          - existing
 
 jobs:
-  xui-install:
+  vps-manager:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     
     steps:
-      - name: Install Required Tools
+      - name: Install Tools
         run: |
-          echo "========================================="
-          echo "📦 INSTALLING REQUIRED TOOLS"
-          echo "========================================="
           sudo apt-get update
-          sudo apt-get install -y curl wget net-tools jq openssh-server
+          sudo apt-get install -y sshpass netcat-openbsd curl wget
           echo "✅ Tools installed"
       
-      - name: Configure SSH (for backup access)
+      - name: Setup Mode - New User Guide
+        if: github.event.inputs.setup_mode == 'new'
         run: |
-          echo "========================================="
-          echo "🔐 CONFIGURING SSH ACCESS"
-          echo "========================================="
-          echo "root:12345678" | sudo chpasswd
-          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl restart ssh
-          echo "✅ SSH configured with password: 12345678"
+          echo "=============================================="
+          echo "     📋 HOW TO GET YOUR FREE/PAID VPS"
+          echo "=============================================="
+          echo "🔹 OPTION 1: DIGITALOCEAN"
+          echo "   1. Go to: https://www.digitalocean.com/"
+          echo "   2. Sign up (get \$200 free credit)"
+          echo "   3. Click 'Create Droplet'"
+          echo "   4. Choose: Ubuntu 22.04 LTS"
+          echo "   5. Set your root password"
+          echo ""
+          echo "🔹 OPTION 2: VULTR"
+          echo "   1. Go to: https://www.vultr.com/"
+          echo "   2. Sign up (get \$100 free credit)"
+          echo "   3. Click 'Deploy Server'"
+          echo "   4. Choose: Ubuntu 22.04 LTS"
+          echo ""
+          echo "⚠️  AFTER GETTING YOUR VPS:"
+          echo "   1. Copy your IP address"
+          echo "   2. Copy your root password"
+          echo "   3. Run with setup_mode: existing"
+          echo "=============================================="
       
-      - name: Get Server IP
-        id: get_ip
+      - name: Configure VPS Connection
+        if: github.event.inputs.setup_mode == 'existing' && github.event.inputs.vps_ip != ''
         run: |
-          echo "========================================="
-          echo "🌐 DETECTING SERVER IP"
-          echo "========================================="
+          VPS_IP="${{ github.event.inputs.vps_ip }}"
+          VPS_PORT="22"
+          VPS_USER="root"
+          VPS_PASS="${{ github.event.inputs.vps_password }}"
           
-          if [[ -n "${{ github.event.inputs.panel_ip }}" ]]; then
-            SERVER_IP="${{ github.event.inputs.panel_ip }}"
-            echo "📌 Using manual IP: $SERVER_IP"
+          echo "VPS_IP=$VPS_IP" >> $GITHUB_ENV
+          echo "VPS_PORT=$VPS_PORT" >> $GITHUB_ENV
+          echo "VPS_USER=$VPS_USER" >> $GITHUB_ENV
+          echo "VPS_PASS=$VPS_PASS" >> $GITHUB_ENV
+          
+          echo "========================================="
+          echo "🔌 VPS CONNECTION DETAILS"
+          echo "========================================="
+          echo "IP: $VPS_IP"
+          echo "Port: $VPS_PORT"
+          echo "User: $VPS_USER"
+          echo "========================================="
+      
+      - name: Test VPS Connection
+        if: github.event.inputs.setup_mode == 'existing' && github.event.inputs.vps_ip != ''
+        run: |
+          echo "🔍 Testing connection to $VPS_IP on port 22..."
+          
+          if nc -zv -w 5 $VPS_IP 22 2>&1 | grep -q "succeeded"; then
+            echo "✅ Port 22 is OPEN"
+            echo "PORT_OPEN=true" >> $GITHUB_ENV
           else
-            echo "📡 Auto-detecting IP..."
-            SERVER_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "127.0.0.1")
-            echo "📌 Auto-detected IP: $SERVER_IP"
+            echo "❌ Port 22 is CLOSED"
+            echo "PORT_OPEN=false" >> $GITHUB_ENV
+            echo "Check if VPS is running and SSH is enabled"
+            exit 1
           fi
-          
-          # Get IPv6 if enabled
-          if [[ "${{ github.event.inputs.enable_ipv6 }}" == "yes" ]]; then
-            IPV6_ADDR=$(curl -s --max-time 5 -6 ifconfig.me 2>/dev/null || echo "Not available")
-            echo "📌 IPv6: $IPV6_ADDR"
-            echo "IPV6_ADDR=$IPV6_ADDR" >> $GITHUB_ENV
-          fi
-          
-          echo "SERVER_IP=$SERVER_IP" >> $GITHUB_ENV
-          echo "✅ IP detection complete"
       
-      - name: Open Firewall Ports
+      - name: Connect to VPS
+        if: env.PORT_OPEN == 'true'
         run: |
-          echo "========================================="
-          echo "🔥 OPENING FIREWALL PORTS"
-          echo "========================================="
+          echo "🚀 Connecting to VPS..."
           
-          # Disable ufw
-          sudo ufw disable 2>/dev/null || true
-          
-          # Clear iptables
-          sudo iptables -P INPUT ACCEPT
-          sudo iptables -P FORWARD ACCEPT
-          sudo iptables -P OUTPUT ACCEPT
-          sudo iptables -F
-          
-          # Open ALL ports 1-65535
-          echo "Opening ports 1-65535..."
-          for port in 80 443 54321 8080 8880 8443 2052 2082 2083 2086 2087 2095 2096; do
-            sudo iptables -A INPUT -p tcp --dport $port -j ACCEPT
-            sudo iptables -A INPUT -p udp --dport $port -j ACCEPT
-            echo "  ✓ Port $port opened"
-          done
-          
-          # Open range ports
-          for port in {10000..65535}; do
-            sudo iptables -A INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null || true
-            sudo iptables -A INPUT -p udp --dport $port -j ACCEPT 2>/dev/null || true
-          done
-          
-          echo "✅ ALL PORTS 1-65535 ARE OPEN"
+          sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 \
+            -p 22 \
+            $VPS_USER@$VPS_IP "
+            echo '✅ CONNECTED SUCCESSFULLY'
+            echo 'Hostname:' \$(hostname)
+            echo 'Uptime:' \$(uptime -p)
+            echo 'Memory:'
+            free -h
+            echo 'Disk:'
+            df -h
+          " || echo "❌ Connection failed"
       
-      - name: Install 3X-UI Panel
-        run: |
-          echo "========================================="
-          echo "📥 INSTALLING 3X-UI PANEL"
-          echo "========================================="
-          
-          # Download and run installation script
-          bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/main/install.sh) << EOF
-y
-${{ github.event.inputs.web_port }}
-root
-root123
-root123
-$SERVER_IP
-EOF
-          
-          echo "✅ 3X-UI Panel installed"
-      
-      - name: Configure 3X-UI with 10 Options
-        run: |
-          echo "========================================="
-          echo "⚙️ CONFIGURING 3X-UI WITH 10 OPTIONS"
-          echo "========================================="
-          
-          # Wait for panel to fully start
-          sleep 10
-          
-          # Create API commands to configure 10 inbounds
-          cat > configure-xui.sh << 'EOF'
-#!/bin/bash
-
-PANEL_PORT="${{ github.event.inputs.web_port }}"
-PANEL_USER="root"
-PANEL_PASS="root123"
-SERVER_IP="$SERVER_IP"
-
-echo "Configuring 3X-UI with 10 different options..."
-
-# Option 1: VMESS-TCP
-curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "remark": "VMESS-TCP-80",
-    "port": 80,
-    "protocol": "vmess",
-    "settings": "{\"clients\":[]}",
-    "streamSettings": "{\"network\":\"tcp\"}"
-  }'
-
-# Option 2: VMESS-WS
-curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "remark": "VMESS-WS-443",
-    "port": 443,
-    "protocol": "vmess",
-    "settings": "{\"clients\":[]}",
-    "streamSettings": "{\"network\":\"ws\", \"wsSettings\":{\"path\":\"/vmess\"}}"
-  }'
-
-# Option 3: VLESS-TCP
-curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "remark": "VLESS-TCP-8080",
-    "port": 8080,
-    "protocol": "vless",
-    "settings": "{\"clients\":[]}",
-    "streamSettings": "{\"network\":\"tcp\"}"
-  }'
-
-# Option 4: VLESS-WS
-curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "remark": "VLESS-WS-8443",
-    "port": 8443,
-    "protocol": "vless",
-    "settings": "{\"clients\":[]}",
-    "streamSettings": "{\"network\":\"ws\", \"wsSettings\":{\"path\":\"/vless\"}}"
-  }'
-
-# Option 5: TROJAN-TCP
-curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "remark": "TROJAN-TCP-2052",
-    "port": 2052,
-    "protocol": "trojan",
-    "settings": "{\"clients\":[]}",
-    "streamSettings": "{\"network\":\"tcp\"}"
-  }'
-
-# Option 6: TROJAN-WS
-curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "remark": "TROJAN-WS-2082",
-    "port": 2082,
-    "protocol": "trojan",
-    "settings": "{\"clients\":[]}",
-    "streamSettings": "{\"network\":\"ws\", \"wsSettings\":{\"path\":\"/trojan\"}}"
-  }'
-
-# Option 7: Shadowsocks
-curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "remark": "SHADOWSOCKS-2083",
-    "port": 2083,
-    "protocol": "shadowsocks",
-    "settings": "{\"clients\":[]}",
-    "streamSettings": "{\"network\":\"tcp\"}"
-  }'
-
-# Option 8: VMESS-gRPC
-curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "remark": "VMESS-gRPC-2086",
-    "port": 2086,
-    "protocol": "vmess",
-    "settings": "{\"clients\":[]}",
-    "streamSettings": "{\"network\":\"grpc\", \"grpcSettings\":{\"serviceName\":\"vmess\"}}"
-  }'
-
-# Option 9: VLESS-gRPC
-curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "remark": "VLESS-gRPC-2087",
-    "port": 2087,
-    "protocol": "vless",
-    "settings": "{\"clients\":[]}",
-    "streamSettings": "{\"network\":\"grpc\", \"grpcSettings\":{\"serviceName\":\"vless\"}}"
-  }'
-
-# Option 10: TROJAN-gRPC
-curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "remark": "TROJAN-gRPC-2095",
-    "port": 2095,
-    "protocol": "trojan",
-    "settings": "{\"clients\":[]}",
-    "streamSettings": "{\"network\":\"grpc\", \"grpcSettings\":{\"serviceName\":\"trojan\"}}"
-  }'
-
-echo "✅ 10 options configured successfully"
-EOF
-          
-          chmod +x configure-xui.sh
-          ./configure-xui.sh
-      
-      - name: Install Cloudflare Tunnel
-        run: |
-          echo "========================================="
-          echo "🌩️ INSTALLING CLOUDFLARE TUNNEL"
-          echo "========================================="
-          
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
-          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
-          
-          echo "✅ Cloudflared installed"
-      
-      - name: Start Cloudflare Tunnel
-        run: |
-          echo "========================================="
-          echo "🚀 STARTING CLOUDFLARE TUNNEL"
-          echo "========================================="
-          
-          # Start tunnel for web panel
-          cloudflared tunnel --url http://localhost:${{ github.event.inputs.web_port }} &
-          WEB_TUNNEL_PID=$!
-          
-          # Start tunnel for SSH
-          cloudflared tunnel --url ssh://localhost:22 &
-          SSH_TUNNEL_PID=$!
-          
-          sleep 15
-          
-          echo ""
-          echo "██████████████████████████████████████████████████████████████"
-          echo "██                                                          ██"
-          echo "██           ✅ 3X-UI PANEL IS READY                        ██"
-          echo "██                                                          ██"
-          echo "██████████████████████████████████████████████████████████████"
-          echo ""
-          echo "📋 PANEL ACCESS DETAILS:"
-          echo "══════════════════════════════════════════════════════════════"
-          echo ""
-          echo "   🌐 Web Panel URL: https://[TUNNEL-URL]/"
-          echo "   🔢 Panel Port:    ${{ github.event.inputs.web_port }}"
-          echo "   👤 Username:      root"
-          echo "   🔑 Password:      root123"
-          echo ""
-          echo "   🔐 SSH ACCESS:"
-          echo "   • Host: [SSH-TUNNEL-URL]"
-          echo "   • Port: 22"
-          echo "   • User: root"
-          echo "   • Pass: 12345678"
-          echo ""
-          echo "📡 10 CONFIGURED OPTIONS:"
-          echo "   ═══════════════════════════════════════════════════════════"
-          echo "   1.  VMESS-TCP    (port 80)"
-          echo "   2.  VMESS-WS     (port 443)"
-          echo "   3.  VLESS-TCP    (port 8080)"
-          echo "   4.  VLESS-WS     (port 8443)"
-          echo "   5.  TROJAN-TCP   (port 2052)"
-          echo "   6.  TROJAN-WS    (port 2082)"
-          echo "   7.  SHADOWSOCKS  (port 2083)"
-          echo "   8.  VMESS-gRPC   (port 2086)"
-          echo "   9.  VLESS-gRPC   (port 2087)"
-          echo "   10. TROJAN-gRPC  (port 2095)"
-          echo ""
-          echo "🔓 FIREWALL: ALL PORTS 1-65535 OPEN"
-          echo ""
-          echo "⏱️  Session active for: 6 HOURS"
-          echo "   Started at: $(date)"
-          echo "   Ends at:    $(date -d '+6 hours')"
-          echo ""
-          
-          # Keep running for 6 hours
-          sleep 21600
-          
-          kill $WEB_TUNNEL_PID $SSH_TUNNEL_PID 2>/dev/null || true
-          echo "✅ Tunnels closed"
-      
-      - name: Save Connection Details
+      - name: Save Connection Info
         if: always()
         run: |
-          mkdir -p xui-logs
+          mkdir -p logs
           
-          cat > xui-logs/3xui-details.txt << EOF
-=========================================
-3X-UI PANEL CONNECTION DETAILS
-=========================================
-Date: $(date)
-Run #: ${{ github.run_number }}
-
-PANEL ACCESS:
-═════════════════════════════════════════
-Username: root
-Password: root123
-Panel Port: ${{ github.event.inputs.web_port }}
-
-SSH ACCESS:
-═════════════════════════════════════════
-Username: root
-Password: 12345678
-Port: 22
-
-FIREWALL: ALL PORTS 1-65535 OPEN
-
-CONFIGURED OPTIONS:
-═════════════════════════════════════════
-1.  VMESS-TCP    (port 80)
-2.  VMESS-WS     (port 443)
-3.  VLESS-TCP    (port 8080)
-4.  VLESS-WS     (port 8443)
-5.  TROJAN-TCP   (port 2052)
-6.  TROJAN-WS    (port 2082)
-7.  SHADOWSOCKS  (port 2083)
-8.  VMESS-gRPC   (port 2086)
-9.  VLESS-gRPC   (port 2087)
-10. TROJAN-gRPC  (port 2095)
-=========================================
-EOF
-          
-          echo "✅ Connection details saved"
+          echo "=========================================" > logs/connection.txt
+          echo "VPS CONNECTION INFORMATION" >> logs/connection.txt
+          echo "=========================================" >> logs/connection.txt
+          echo "Date: $(date)" >> logs/connection.txt
+          echo "Run #: ${{ github.run_number }}" >> logs/connection.txt
+          echo "" >> logs/connection.txt
+          echo "VPS IP: ${{ github.event.inputs.vps_ip }}" >> logs/connection.txt
+          echo "Username: root" >> logs/connection.txt
+          echo "Password: [HIDDEN]" >> logs/connection.txt
+          echo "" >> logs/connection.txt
+          echo "Status: ${{ job.status }}" >> logs/connection.txt
+          echo "=========================================" >> logs/connection.txt
       
       - name: Upload Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: 3xui-details-${{ github.run_number }}
-          path: xui-logs/
+          name: vps-logs-${{ github.run_number }}
+          path: logs/
           retention-days: 30
+      
+      - name: Final Summary
+        if: always()
+        run: |
+          echo ""
+          echo "══════════════════════════════════════════════"
+          echo "           🎯 VPS SETUP SUMMARY"
+          echo "══════════════════════════════════════════════"
+          echo ""
+          
+          if [[ "${{ github.event.inputs.setup_mode }}" == "new" ]]; then
+            echo "   📋 You're in SETUP MODE"
+            echo "   ✅ Follow the guide above to get your VPS"
+          else
+            echo "   🌐 VPS IP: ${{ github.event.inputs.vps_ip }}"
+            echo "   📊 Status:  ${{ job.status }}"
+          fi
+          
+          echo ""
+          echo "   ⏰ Next run in 6 hours"
+          echo "   📅 30-day schedule active"
+          echo "══════════════════════════════════════════════"
