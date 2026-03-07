@@ -1,4 +1,4 @@
-name: Web Terminal VPS - Browser Access
+name: Web Terminal with External Access
 
 on:
   schedule:
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 360
     
     steps:
-      - name: Create Container
+      - name: Create Container (Optional - for full VPS)
         run: |
           docker run -d --name vps \
             -p 2222:22 \
@@ -22,8 +22,8 @@ jobs:
               echo 'root:12345678' | chpasswd && 
               service ssh start && 
               tail -f /dev/null
-            "
-          sleep 10
+            " || true
+          sleep 5
       
       - name: Install Gotty (Web Terminal)
         run: |
@@ -37,52 +37,46 @@ jobs:
           # Start gotty with root access
           gotty -w -p 8080 -c "root:12345678" bash &
           GOTTY_PID=$!
-          sleep 3
+          sleep 5
           
           echo ""
           echo "██████████████████████████████████████████████████████████████"
           echo "██                                                          ██"
-          echo "██           ✅ WEB TERMINAL IS READY                       ██"
+          echo "██           ✅ LOCAL WEB TERMINAL READY                    ██"
           echo "██                                                          ██"
           echo "██████████████████████████████████████████████████████████████"
           echo ""
-          echo "🌐 OPEN THIS URL IN YOUR BROWSER:"
-          echo "══════════════════════════════════════════════════════════════"
+          echo "🌐 LOCAL URL (on runner only):"
+          echo "   http://localhost:8080"
           echo ""
-          echo "   🔗 http://localhost:8080"
+          echo "📝 Login: root / 12345678"
           echo ""
-          echo "📝 LOGIN CREDENTIALS:"
-          echo "   Username: root"
-          echo "   Password: 12345678"
-          echo ""
-          echo "⚠️  This works on the runner - for external access, we need a tunnel"
-          echo ""
-          
-          sleep 21600
-          kill $GOTTY_PID
       
-      - name: Install Cloudflared (for external access)
+      - name: Install Cloudflared
         run: |
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared-linux-amd64
           sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          echo "✅ Cloudflared installed"
       
-      - name: Create Web Tunnel
+      - name: Create External Tunnel
         run: |
+          # Create tunnel to gotty web interface
           cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
           TUNNEL_PID=$!
-          sleep 10
+          sleep 15
           
+          # Get the public URL
           TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
           
           echo ""
           echo "██████████████████████████████████████████████████████████████"
           echo "██                                                          ██"
-          echo "██      ✅ ACCESS FROM ANYWHERE (CLOUDFLARE TUNNEL)        ██"
+          echo "██      ✅ EXTERNAL ACCESS READY - USE THIS URL             ██"
           echo "██                                                          ██"
           echo "██████████████████████████████████████████████████████████████"
           echo ""
-          echo "🌐 OPEN THIS URL IN ANY BROWSER:"
+          echo "🌐 OPEN THIS URL IN YOUR BROWSER FROM ANYWHERE:"
           echo "══════════════════════════════════════════════════════════════"
           echo ""
           echo "   🔗 $TUNNEL_URL"
@@ -91,8 +85,34 @@ jobs:
           echo "   Username: root"
           echo "   Password: 12345678"
           echo ""
+          echo "📱 ON YOUR PHONE:"
+          echo "   Just open the URL in Chrome/Safari"
+          echo ""
+          echo "💻 ON YOUR COMPUTER:"
+          echo "   Open the URL in any browser"
+          echo ""
           echo "⏱️  Session active for 6 hours"
+          echo "   Started: $(date)"
+          echo "   Ends:    $(date -d '+6 hours')"
           echo ""
           
+          # Save URL to file
+          echo "$TUNNEL_URL" > web-url.txt
+          echo "root" > username.txt
+          echo "12345678" > password.txt
+          
+          # Keep alive
           sleep 21600
           kill $TUNNEL_PID
+          kill $GOTTY_PID
+      
+      - name: Upload Connection Details
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-terminal-${{ github.run_number }}
+          path: |
+            web-url.txt
+            username.txt
+            password.txt
+          retention-days: 30
