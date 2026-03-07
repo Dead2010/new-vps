@@ -1,23 +1,17 @@
-name: SSH for Termius - 8 Hour Access
+name: SSH for Termius - Serveo.net
 
 on:
   schedule:
-    - cron: '0 */8 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
-    inputs:
-      ngrok_token:
-        description: 'Get token from https://dashboard.ngrok.com'
-        required: true
-        default: ''
-        type: string
 
 jobs:
-  termius-ssh:
+  serveo-ssh:
     runs-on: ubuntu-latest
-    timeout-minutes: 500  # 8 hours + buffer
+    timeout-minutes: 10
     
     steps:
-      - name: Install SSH
+      - name: Setup SSH
         run: |
           sudo apt-get update
           sudo apt-get install -y openssh-server
@@ -26,62 +20,34 @@ jobs:
           sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
       
-      - name: Install ngrok
+      - name: Create Serveo Tunnel
         run: |
-          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-          tar xf ngrok-v3-stable-linux-amd64.tgz
-          ./ngrok config add-authtoken "${{ github.event.inputs.ngrok_token }}"
-      
-      - name: Start Tunnel
-        run: |
-          # Start ngrok tunnel
-          ./ngrok tcp 22 --log=stdout > ngrok.log &
-          sleep 10
+          echo ""
+          echo "========================================="
+          echo "🚀 CREATING SERVERO TUNNEL"
+          echo "========================================="
+          echo ""
           
-          # Get the public URL
-          curl -s http://localhost:4040/api/tunnels > tunnels.json
-          NGROK_URL=$(cat tunnels.json | grep -o 'tcp://[0-9.]*:[0-9]*')
-          NGROK_HOST=$(echo $NGROK_URL | cut -d/ -f3 | cut -d: -f1)
-          NGROK_PORT=$(echo $NGROK_URL | cut -d: -f4)
+          # Create SSH tunnel to serveo.net
+          ssh -o StrictHostKeyChecking=no -R 80:localhost:22 serveo.net &
+          TUNNEL_PID=$!
+          sleep 5
           
           echo ""
-          echo "██████████████████████████████████████████████████████████████"
-          echo "██                                                          ██"
-          echo "██           ✅ ADD THIS TO TERMIUS NOW                      ██"
-          echo "██                                                          ██"
-          echo "██████████████████████████████████████████████████████████████"
+          echo "✅ TUNNEL CREATED!"
           echo ""
           echo "📱 TERMIUS CONNECTION DETAILS:"
-          echo "══════════════════════════════════════════════════════════════"
+          echo "══════════════════════════════════"
           echo ""
-          echo "   🌐 Hostname: $NGROK_HOST"
-          echo "   🔢 Port:     $NGROK_PORT"
-          echo "   👤 Username: root"
-          echo "   🔑 Password: 12345678"
+          echo "   Hostname: serveo.net"
+          echo "   Port:     22"
+          echo "   Username: root"
+          echo "   Password: 12345678"
           echo ""
-          echo "   📋 COPY THESE EXACT VALUES INTO TERMIUS:"
-          echo "   ═══════════════════════════════════════════════════════════"
+          echo "   Alternative port: 2222"
           echo ""
-          echo "   ➜ Hostname: $NGROK_HOST"
-          echo "   ➜ Port:     $NGROK_PORT"
-          echo "   ➜ User:     root"
-          echo "   ➜ Password: 12345678"
-          echo ""
-          echo "⏱️  This tunnel lasts for 8 HOURS!"
-          echo "   New tunnel every 8 hours"
-          echo ""
-          echo "📝 To test now: ssh root@$NGROK_HOST -p $NGROK_PORT"
+          echo "⏱️  Tunnel active for 10 minutes"
           echo ""
           
-          # Save to file
-          echo "$NGROK_HOST:$NGROK_PORT" > termius-details.txt
-          
-          # Keep running for 8 hours
-          sleep 28800
-      
-      - name: Upload Connection Details
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: termius-connection-${{ github.run_number }}
-          path: termius-details.txt
+          sleep 600
+          kill $TUNNEL_PID 2>/dev/null || true
