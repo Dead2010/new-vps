@@ -1,20 +1,14 @@
-name: Docker VPS with Ngrok - 8 Hour Sessions
+name: Docker VPS with Cloudflare - 6 Hour Sessions
 
 on:
   schedule:
-    - cron: '0 */8 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
-    inputs:
-      ngrok_token:
-        description: 'Your ngrok auth token'
-        required: true
-        default: '3AGZkWMXr7YsLclerO066IEYFLt_4KXrzELfETgqD3yED9qku'
-        type: string
 
 jobs:
   create-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 500
+    timeout-minutes: 360  # 6 hours
     
     steps:
       - name: Install Tools
@@ -23,13 +17,13 @@ jobs:
           sudo apt-get install -y openssh-client sshpass curl netcat-openbsd
           echo "✅ Tools installed"
       
-      - name: Create Docker Container with SSH
+      - name: Create Docker Container
         run: |
           # Remove old container if exists
           docker stop vps-container 2>/dev/null || true
           docker rm vps-container 2>/dev/null || true
           
-          # Create fresh container with SSH pre-installed
+          # Create fresh container
           docker run -d --name vps-container \
             -p 2222:22 \
             -p 8080:80 \
@@ -48,144 +42,90 @@ jobs:
             "
           
           echo "✅ Container created"
-          echo "Waiting for SSH to start..."
           sleep 15
       
-      - name: Wait for SSH to be ready
+      - name: Wait for SSH
         run: |
-          echo "Waiting for SSH service to be fully ready..."
           for i in {1..10}; do
             if nc -zv localhost 2222 2>&1 | grep -q succeeded; then
               echo "✅ SSH port is open"
               break
             fi
-            echo "Attempt $i: SSH not ready yet..."
-            sleep 5
+            sleep 3
           done
           
-          # Test SSH connection
-          for i in {1..5}; do
-            if sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=5 \
-              -p 2222 \
-              root@localhost "echo 'SSH is ready'" 2>/dev/null; then
-              echo "✅ SSH is fully operational"
-              exit 0
-            fi
-            echo "Attempt $i: SSH authentication not ready..."
-            sleep 5
-          done
+          # Test SSH
+          sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
+            -p 2222 root@localhost "echo '✅ SSH ready'"
       
-      - name: Verify Container Details
+      - name: Install Cloudflared
         run: |
-          echo "Container Status:"
-          docker ps | grep vps-container
-          echo ""
-          echo "SSH Process in Container:"
-          docker exec vps-container ps aux | grep ssh
-          echo ""
-          echo "SSH Listening Ports:"
-          docker exec vps-container netstat -tlnp | grep :22 || echo "SSH not listening yet"
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          echo "✅ Cloudflared installed"
       
-      - name: Install Ngrok
+      - name: Start Cloudflare Tunnel
         run: |
-          # Download and install ngrok
-          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-          tar -xzf ngrok-v3-stable-linux-amd64.tgz
-          sudo mv ngrok /usr/local/bin/ngrok
+          # Start tunnel
+          cloudflared tunnel --url ssh://localhost:2222 > tunnel.log 2>&1 &
+          TUNNEL_PID=$!
+          sleep 15
           
-          # Add auth token
-          ngrok config add-authtoken "${{ github.event.inputs.ngrok_token }}"
-          echo "✅ Ngrok configured"
-      
-      - name: Start Ngrok SSH Tunnel
-        run: |
-          # Start ngrok tunnel for SSH
-          ngrok tcp 2222 --log=stdout > ngrok.log 2>&1 &
-          NGROK_PID=$!
-          sleep 10
-          
-          # Get the public URL
-          curl -s http://localhost:4040/api/tunnels > tunnels.json
-          cat tunnels.json
-          
-          NGROK_URL=$(cat tunnels.json | grep -o 'tcp://[0-9.]*:[0-9]*' | head -1)
-          NGROK_HOST=$(echo $NGROK_URL | cut -d/ -f3 | cut -d: -f1)
-          NGROK_PORT=$(echo $NGROK_URL | cut -d: -f4)
+          # Get URL
+          TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
+          HOSTNAME=$(echo $TUNNEL_URL | sed 's|https://||')
           
           echo ""
           echo "██████████████████████████████████████████████████████████████"
           echo "██                                                          ██"
-          echo "██           ✅ NGROK VPS IS READY                          ██"
+          echo "██           ✅ YOUR VPS IS READY (6 HOURS)                 ██"
           echo "██                                                          ██"
           echo "██████████████████████████████████████████████████████████████"
           echo ""
-          echo "📱 TERMIUS CONNECTION DETAILS (8 HOUR SESSION):"
+          echo "📱 TERMIUS CONNECTION DETAILS:"
           echo "══════════════════════════════════════════════════════════════"
           echo ""
-          echo "   🌐 Hostname: $NGROK_HOST"
-          echo "   🔢 Port:     $NGROK_PORT"
+          echo "   🌐 Hostname: $HOSTNAME"
+          echo "   🔢 Port:     22"
           echo "   👤 Username: root"
           echo "   🔑 Password: 12345678"
           echo ""
           echo "   📋 COPY THESE EXACT VALUES INTO TERMIUS"
           echo ""
           echo "🔗 Direct SSH Command:"
-          echo "   ssh root@$NGROK_HOST -p $NGROK_PORT"
+          echo "   ssh root@$HOSTNAME -p 22"
           echo ""
-          echo "🖥️  Local Access (for testing):"
+          echo "🖥️  Local Access:"
           echo "   ssh root@localhost -p 2222"
           echo ""
-          echo "🌐 Web Ports (via localhost only):"
+          echo "🌐 Web Ports (local only):"
           echo "   • HTTP:  http://localhost:8080"
           echo "   • HTTPS: https://localhost:8443"
           echo "   • App:   http://localhost:8888"
           echo "   • Panel: http://localhost:54321"
           echo ""
-          echo "⏱️  Session active for: 8 HOURS"
-          echo "   Started at: $(date)"
-          echo "   Ends at:    $(date -d '+8 hours')"
+          echo "⏱️  Session active: 6 HOURS"
+          echo "   Next run in 6 hours"
+          echo "   30-day total: 120 sessions"
           echo ""
           
           # Save to file
-          echo "$NGROK_HOST" > ngrok-host.txt
-          echo "$NGROK_PORT" > ngrok-port.txt
-          echo "root" > ngrok-user.txt
-          echo "12345678" > ngrok-pass.txt
+          echo "$HOSTNAME" > hostname.txt
           
-          # Test the ngrok tunnel
-          echo ""
-          echo "🔍 Testing ngrok tunnel..."
-          sleep 5
-          sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=10 \
-            -p $NGROK_PORT \
-            root@$NGROK_HOST "echo '✅ Ngrok tunnel is working!'" || \
-            echo "⚠️  Ngrok tunnel test failed - but will retry"
-          
-          # Keep alive for 8 hours
-          echo ""
-          echo "⏳ Tunnel running for 8 hours..."
-          sleep 28800  # 8 hours
-          kill $NGROK_PID
+          sleep 21600  # 6 hours
+          kill $TUNNEL_PID
       
       - name: Upload Connection Details
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ngrok-connection-${{ github.run_number }}
-          path: |
-            ngrok-host.txt
-            ngrok-port.txt
-            ngrok-user.txt
-            ngrok-pass.txt
+          name: vps-connection-${{ github.run_number }}
+          path: hostname.txt
           retention-days: 30
-          if-no-files-found: warn
       
       - name: Cleanup
         if: always()
         run: |
-          echo "Cleaning up..."
           docker stop vps-container 2>/dev/null || true
           docker rm vps-container 2>/dev/null || true
-          echo "✅ Cleanup complete"
