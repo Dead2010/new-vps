@@ -1,4 +1,4 @@
-name: Simple Working VPS
+name: Web Terminal VPS - Browser Access
 
 on:
   schedule:
@@ -6,70 +6,93 @@ on:
   workflow_dispatch:
 
 jobs:
-  vps:
+  web-terminal:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     
     steps:
-      - name: Create Container with SSH
+      - name: Create Container
         run: |
-          # Create container with SSH pre-configured
           docker run -d --name vps \
             -p 2222:22 \
             ubuntu:22.04 \
             bash -c "
               apt-get update && 
               apt-get install -y openssh-server && 
-              mkdir /var/run/sshd &&
               echo 'root:12345678' | chpasswd && 
-              sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && 
-              sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
-              /usr/sbin/sshd -D
+              service ssh start && 
+              tail -f /dev/null
             "
-          
-          echo "✅ Container created"
-          echo "Waiting 20 seconds for SSH..."
-          sleep 20
+          sleep 10
       
-      - name: Verify SSH
+      - name: Install Gotty (Web Terminal)
         run: |
-          # Simple verification
-          nc -zv localhost 2222 && echo "✅ Port open" || echo "❌ Port closed"
+          wget -q https://github.com/yudai/gotty/releases/download/v1.0.1/gotty_linux_amd64.tar.gz
+          tar -xzf gotty_linux_amd64.tar.gz
+          chmod +x gotty
+          sudo mv gotty /usr/local/bin/
       
-      - name: Get Tunnel URL
-        id: tunnel
+      - name: Start Gotty Web Terminal
         run: |
-          # Install cloudflared
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
-          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
-          
-          # Start tunnel
-          cloudflared tunnel --url ssh://localhost:2222 > tunnel.log 2>&1 &
-          sleep 15
-          
-          # Get URL
-          URL=$(grep -o 'https://[a-z-]*\.trycloudflare\.com' tunnel.log | head -1)
-          HOST=$(echo $URL | sed 's|https://||')
-          
-          echo "URL=$URL" >> $GITHUB_OUTPUT
-          echo "HOST=$HOST" >> $GITHUB_OUTPUT
+          # Start gotty with root access
+          gotty -w -p 8080 -c "root:12345678" bash &
+          GOTTY_PID=$!
+          sleep 3
           
           echo ""
-          echo "========================================="
-          echo "    ✅ VPS READY - COPY THIS TO TERMIUS"
-          echo "========================================="
+          echo "██████████████████████████████████████████████████████████████"
+          echo "██                                                          ██"
+          echo "██           ✅ WEB TERMINAL IS READY                       ██"
+          echo "██                                                          ██"
+          echo "██████████████████████████████████████████████████████████████"
           echo ""
-          echo "📱 TERMIUS CONNECTION:"
-          echo "   Hostname: $HOST"
-          echo "   Port:     2222"
+          echo "🌐 OPEN THIS URL IN YOUR BROWSER:"
+          echo "══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "   🔗 http://localhost:8080"
+          echo ""
+          echo "📝 LOGIN CREDENTIALS:"
           echo "   Username: root"
           echo "   Password: 12345678"
           echo ""
-          echo "🔗 SSH Command:"
-          echo "   ssh root@$HOST -p 2222"
+          echo "⚠️  This works on the runner - for external access, we need a tunnel"
           echo ""
-          echo "⏱️  Active for 6 hours"
-          echo "========================================="
           
           sleep 21600
+          kill $GOTTY_PID
+      
+      - name: Install Cloudflared (for external access)
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+      
+      - name: Create Web Tunnel
+        run: |
+          cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+          TUNNEL_PID=$!
+          sleep 10
+          
+          TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
+          
+          echo ""
+          echo "██████████████████████████████████████████████████████████████"
+          echo "██                                                          ██"
+          echo "██      ✅ ACCESS FROM ANYWHERE (CLOUDFLARE TUNNEL)        ██"
+          echo "██                                                          ██"
+          echo "██████████████████████████████████████████████████████████████"
+          echo ""
+          echo "🌐 OPEN THIS URL IN ANY BROWSER:"
+          echo "══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "   🔗 $TUNNEL_URL"
+          echo ""
+          echo "📝 LOGIN CREDENTIALS:"
+          echo "   Username: root"
+          echo "   Password: 12345678"
+          echo ""
+          echo "⏱️  Session active for 6 hours"
+          echo ""
+          
+          sleep 21600
+          kill $TUNNEL_PID
