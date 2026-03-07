@@ -12,7 +12,8 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y netcat openssh-client sshpass curl
+          sudo apt-get install -y openssh-client sshpass curl netcat-openbsd
+          echo "✅ Tools installed"
       
       - name: Check Docker Container
         run: |
@@ -28,7 +29,7 @@ jobs:
             docker exec vps-container ps aux | grep ssh
           else
             echo "❌ Container not running - restarting..."
-            docker start vps-container 2>/dev/null || docker run -d --name vps-container \
+            docker run -d --name vps-container \
               -p 2222:22 \
               -p 8080:80 \
               -p 8443:443 \
@@ -44,6 +45,8 @@ jobs:
                 service ssh start && 
                 tail -f /dev/null
               "
+            echo "✅ Container restarted"
+            sleep 10
           fi
       
       - name: Fix SSH Configuration
@@ -70,6 +73,7 @@ jobs:
             service ssh status
             
             echo '========= SSH LISTENING PORTS ========='
+            apt-get update && apt-get install -y net-tools
             netstat -tlnp | grep ssh || ss -tlnp | grep ssh
           "
       
@@ -78,9 +82,6 @@ jobs:
           echo "========================================="
           echo "🔍 TESTING LOCAL SSH CONNECTION"
           echo "========================================="
-          
-          # Install sshpass if needed
-          sudo apt-get install -y sshpass
           
           # Test connection to container via localhost:2222
           echo "Testing localhost:2222..."
@@ -93,9 +94,10 @@ jobs:
               -p 2222 \
               root@localhost "echo '✅ Local SSH working!'" && \
               echo "✅ Local SSH successful" || \
-              echo "❌ Local SSH failed"
+              echo "❌ Local SSH failed - Check password"
           else
             echo "❌ Port 2222 not open locally"
+            echo "Check if container is running: docker ps"
           fi
       
       - name: Restart Cloudflare Tunnel
@@ -141,7 +143,10 @@ jobs:
           echo "🔗 Direct SSH Command:"
           echo "   ssh root@$HOSTNAME -p 22"
           echo ""
-          echo "⏱️  Test this URL immediately - it's active now!"
+          echo "🖥️  Local Access (for testing):"
+          echo "   ssh root@localhost -p 2222"
+          echo ""
+          echo "⏱️  This tunnel is active NOW for 5 minutes"
           echo ""
           
           # Save to file
