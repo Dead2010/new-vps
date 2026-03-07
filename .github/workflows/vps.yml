@@ -134,7 +134,7 @@ jobs:
             echo '========================================='
           " || echo "❌ Connection to $VPS_IP failed"
       
-      - name: Install and Run SSHX
+      - name: Install SSHX
         if: env.PORT_OPEN == 'true'
         run: |
           echo "========================================="
@@ -148,36 +148,52 @@ jobs:
           echo ""
           echo "✅ SSHX installed successfully"
           echo ""
+      
+      - name: Get SSHX Help
+        if: env.PORT_OPEN == 'true'
+        run: |
+          echo "========================================="
+          echo "📚 SSHX HELP"
+          echo "========================================="
+          echo ""
+          
+          # Show help to understand available commands
+          sshx --help
+          echo ""
+      
+      - name: Start SSHX Session
+        if: env.PORT_OPEN == 'true'
+        continue-on-error: true
+        run: |
           echo "========================================="
           echo "🚀 STARTING SSHX SESSION"
           echo "========================================="
           echo ""
           
-          # Run sshx in the background with a timeout
-          # This will create a shareable terminal session
-          sshx run &
+          # Try different syntax options
+          echo "Attempting to start SSHX session..."
+          echo ""
+          
+          # Option 1: Basic SSHX
+          sshx &
           SSHX_PID=$!
           
-          # Give it a few seconds to start
+          # Give it time to start
           sleep 5
           
-          echo ""
-          echo "📡 SSHX session is running in background"
-          echo "📝 Session URL will be displayed in the logs"
-          echo ""
-          echo "⚠️  Note: The session will run for the duration"
-          echo "   of this workflow step (max 5-10 minutes)"
-          echo ""
-          
-          # Keep it running for a while to allow connections
-          echo "Session active for 300 seconds..."
-          sleep 300
-          
-          # Kill the sshx process
-          kill $SSHX_PID 2>/dev/null || true
-          echo "✅ SSHX session ended"
+          # Check if it's running
+          if ps -p $SSHX_PID > /dev/null; then
+            echo "✅ SSHX session started with PID: $SSHX_PID"
+            echo "📝 Check the logs above for the session URL"
+            echo ""
+            echo "Session active for 300 seconds..."
+            sleep 300
+            kill $SSHX_PID 2>/dev/null || true
+          else
+            echo "❌ SSHX session failed to start"
+          fi
       
-      - name: Alternative SSHX Method (Background)
+      - name: Alternative SSHX Method
         if: env.PORT_OPEN == 'true'
         continue-on-error: true
         run: |
@@ -186,11 +202,14 @@ jobs:
           echo "========================================="
           echo ""
           
-          # Try running with specific region if needed
-          curl -sSf https://sshx.io/get | sh -s run --region us &
+          # Try with different options
+          echo "Attempting SSHX with default settings..."
+          sshx --session &
+          sleep 10
+          pkill sshx || true
           
-          echo "SSHX started in background with US region"
-          echo "Check workflow logs for the session URL"
+          echo ""
+          echo "For more information, visit: https://sshx.io/docs"
       
       - name: Display Connection Summary
         if: always()
@@ -204,12 +223,14 @@ jobs:
           echo "   🔢 SSH Port:      $VPS_PORT"
           echo "   👤 SSH User:      $VPS_USER"
           echo "   📊 Status:        ${{ job.status }}"
-          echo "   🔗 SSHX:          Installed & Run"
+          echo "   🔗 SSHX:          Installed"
           echo ""
           echo "   🔗 Connection String:"
           echo "   ssh $VPS_USER@$VPS_IP -p $VPS_PORT"
           echo ""
           echo "   📁 Logs saved to artifact: vps-logs-run-${{ github.run_number }}"
+          echo ""
+          echo "   📝 SSHX Documentation: https://sshx.io/docs"
           echo ""
           echo "══════════════════════════════════════════════"
       
@@ -224,7 +245,7 @@ jobs:
           echo "SSH IP: $VPS_IP" >> logs/connection.log
           echo "SSH Port: $VPS_PORT" >> logs/connection.log
           echo "SSH User: $VPS_USER" >> logs/connection.log
-          echo "SSHX: Installed and Run" >> logs/connection.log
+          echo "SSHX: Installed" >> logs/connection.log
           echo "Status: ${{ job.status }}" >> logs/connection.log
           echo "=========================================" >> logs/connection.log
           
@@ -252,5 +273,5 @@ jobs:
           echo "📆 30-day schedule: Active"
           echo "🔢 Run #: ${{ github.run_number }}"
           echo "🌐 Connected to: $VPS_IP"
-          echo "🔗 SSHX: Session was started"
+          echo "🔗 SSHX: Installed"
           echo "========================================="
