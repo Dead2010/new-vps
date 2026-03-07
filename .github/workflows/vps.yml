@@ -7,18 +7,18 @@ on:
     inputs:
       vps_ip:
         description: 'Your VPS IP Address (get from provider)'
-        required: true
+        required: false
         default: ''
         type: string
       vps_password:
         description: 'Your VPS Root Password'
-        required: true
+        required: false
         default: ''
         type: string
       setup_mode:
         description: 'Setup mode (new/existing)'
         required: false
-        default: 'existing'
+        default: 'new'
         type: choice
         options:
           - new
@@ -88,7 +88,7 @@ jobs:
           echo "=============================================="
       
       - name: Configure VPS Connection
-        if: github.event.inputs.setup_mode == 'existing'
+        if: github.event.inputs.setup_mode == 'existing' && github.event.inputs.vps_ip != ''
         run: |
           VPS_IP="${{ github.event.inputs.vps_ip }}"
           VPS_PORT="22"
@@ -120,7 +120,7 @@ jobs:
           echo "========================================="
       
       - name: Test VPS Connection
-        if: github.event.inputs.setup_mode == 'existing'
+        if: github.event.inputs.setup_mode == 'existing' && github.event.inputs.vps_ip != ''
         run: |
           echo "========================================="
           echo "🔍 TESTING CONNECTION TO VPS"
@@ -235,24 +235,22 @@ jobs:
         run: |
           mkdir -p vps-logs
           
-          cat > vps-logs/connection-info.txt << EOF
-=========================================
-VPS CONNECTION INFORMATION
-=========================================
-Date: $(date)
-Run #: ${{ github.run_number }}
-
-YOUR VPS DETAILS FOR TERMIUS:
------------------------------------------
-Hostname/IP: ${{ github.event.inputs.vps_ip }}
-SSH Port:    22
-Username:    root
-Password:    [The password you entered]
------------------------------------------
-
-Connection Status: ${{ job.status }}
-=========================================
-EOF
+          echo "=========================================" > vps-logs/connection-info.txt
+          echo "VPS CONNECTION INFORMATION" >> vps-logs/connection-info.txt
+          echo "=========================================" >> vps-logs/connection-info.txt
+          echo "Date: $(date)" >> vps-logs/connection-info.txt
+          echo "Run #: ${{ github.run_number }}" >> vps-logs/connection-info.txt
+          echo "" >> vps-logs/connection-info.txt
+          echo "YOUR VPS DETAILS FOR TERMIUS:" >> vps-logs/connection-info.txt
+          echo "-----------------------------------------" >> vps-logs/connection-info.txt
+          echo "Hostname/IP: ${{ github.event.inputs.vps_ip }}" >> vps-logs/connection-info.txt
+          echo "SSH Port:    22" >> vps-logs/connection-info.txt
+          echo "Username:    root" >> vps-logs/connection-info.txt
+          echo "Password:    [The password you entered]" >> vps-logs/connection-info.txt
+          echo "-----------------------------------------" >> vps-logs/connection-info.txt
+          echo "" >> vps-logs/connection-info.txt
+          echo "Connection Status: ${{ job.status }}" >> vps-logs/connection-info.txt
+          echo "=========================================" >> vps-logs/connection-info.txt
           
           echo "${{ github.event.inputs.vps_ip }}" > vps-logs/vps-ip.txt
       
