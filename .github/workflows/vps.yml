@@ -1,4 +1,4 @@
-name: VPS 30-Day Connection with SSHX
+name: VPS 30-Day Connection with Auto IP
 
 on:
   schedule:
@@ -8,25 +8,81 @@ on:
 jobs:
   vps-connect:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     
     steps:
       - name: Install SSH Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y sshpass netcat-openbsd traceroute curl
+          sudo apt-get install -y sshpass netcat-openbsd curl
           sudo systemctl start ssh || sudo service ssh start
           echo "✅ SSH tools installed"
       
-      - name: Set VPS Details
+      - name: Get VPS Public IP
+        id: get_ip
         run: |
-          # Using localhost IP
-          VPS_IP="127.0.0.1"
+          echo "========================================="
+          echo "🌐 DETECTING VPS PUBLIC IP"
+          echo "========================================="
+          echo ""
+          
+          # Try multiple services to get public IP
+          echo "📡 Attempting to detect public IP..."
+          
+          IP1=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "")
+          IP2=$(curl -s --max-time 5 icanhazip.com 2>/dev/null || echo "")
+          IP3=$(curl -s --max-time 5 ipinfo.io/ip 2>/dev/null || echo "")
+          IP4=$(curl -s --max-time 5 api.ipify.org 2>/dev/null || echo "")
+          
+          # Use the first successful IP
+          for IP in "$IP1" "$IP2" "$IP3" "$IP4"; do
+            if [[ -n "$IP" && "$IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              VPS_IP="$IP"
+              break
+            fi
+          done
+          
+          if [[ -n "$VPS_IP" ]]; then
+            echo "✅ Public IP detected: $VPS_IP"
+            echo "VPS_IP=$VPS_IP" >> $GITHUB_ENV
+          else
+            echo "❌ Could not detect public IP"
+            echo "Using localhost as fallback"
+            echo "VPS_IP=127.0.0.1" >> $GITHUB_ENV
+          fi
+          
+          echo ""
+          echo "📝 Detected IP: $VPS_IP"
+          echo "========================================="
+      
+      - name: Show Detected IP
+        run: |
+          echo "========================================="
+          echo "           📍 YOUR VPS IP"
+          echo "========================================="
+          echo ""
+          echo "   ██╗   ██╗██████╗ ███████╗"
+          echo "   ██║   ██║██╔══██╗██╔════╝"
+          echo "   ██║   ██║██████╔╝███████╗"
+          echo "   ╚██╗ ██╔╝██╔═══╝ ╚════██║"
+          echo "    ╚████╔╝ ██║     ███████║"
+          echo "     ╚═══╝  ╚═╝     ╚══════╝"
+          echo ""
+          echo "   ➜ DETECTED IP: $VPS_IP"
+          echo "   ➜ PORT: 22"
+          echo "   ➜ USER: root"
+          echo ""
+          echo "   🔗 Connection String:"
+          echo "   ssh root@$VPS_IP -p 22"
+          echo ""
+          echo "========================================="
+      
+      - name: Set VPS Connection Details
+        run: |
           VPS_PORT="22"
           VPS_USER="root"
           VPS_PASS="root"
           
-          echo "VPS_IP=$VPS_IP" >> $GITHUB_ENV
           echo "VPS_PORT=$VPS_PORT" >> $GITHUB_ENV
           echo "VPS_USER=$VPS_USER" >> $GITHUB_ENV
           echo "VPS_PASS=$VPS_PASS" >> $GITHUB_ENV
@@ -35,7 +91,7 @@ jobs:
           echo "     🔌 SSH CONNECTION DETAILS"
           echo "========================================="
           echo ""
-          echo "   🌐 SSH IP ADDRESS:    $VPS_IP"
+          echo "   🌐 VPS IP ADDRESS:    $VPS_IP"
           echo "   🔢 SSH PORT:          $VPS_PORT"
           echo "   👤 SSH USERNAME:      $VPS_USER"
           echo "   🔑 SSH PASSWORD:      [HIDDEN]"
@@ -45,37 +101,7 @@ jobs:
           echo ""
           echo "========================================="
       
-      - name: Show SSH IP
-        run: |
-          echo "========================================="
-          echo "           📍 SSH IP ADDRESS"
-          echo "========================================="
-          echo ""
-          echo "   ██████╗ ███████╗███████╗"
-          echo "   ██╔══██╗██╔════╝██╔════╝"
-          echo "   ██████╔╝█████╗  ███████╗"
-          echo "   ██╔═══╝ ██╔══╝  ╚════██║"
-          echo "   ██║     ███████╗███████║"
-          echo "   ╚═╝     ╚══════╝╚══════╝"
-          echo ""
-          echo "   ➜ IP: $VPS_IP"
-          echo "   ➜ PORT: $VPS_PORT"
-          echo "   ➜ USER: $VPS_USER"
-          echo ""
-          echo "   🔗 Quick Connect:"
-          echo "   ssh $VPS_USER@$VPS_IP -p $VPS_PORT"
-          echo ""
-          echo "========================================="
-      
-      - name: Setup Local SSH
-        run: |
-          echo "root:root" | sudo chpasswd
-          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl restart ssh || sudo service ssh restart
-          echo "✅ Local SSH configured"
-      
-      - name: Test Local Connection
+      - name: Test Connection to VPS
         run: |
           echo "🔍 Testing connection to $VPS_IP on port $VPS_PORT..."
           
@@ -83,7 +109,7 @@ jobs:
           if ping -c 2 -W 3 $VPS_IP > /dev/null 2>&1; then
             echo "   ✅ $VPS_IP is reachable"
           else
-            echo "   ⚠️  $VPS_IP not responding to ping"
+            echo "   ⚠️  $VPS_IP not responding to ping (firewall may block ICMP)"
           fi
           echo ""
           
@@ -94,6 +120,12 @@ jobs:
           else
             echo "   ❌ Port $VPS_PORT is not accessible on $VPS_IP"
             echo "PORT_OPEN=false" >> $GITHUB_ENV
+            echo ""
+            echo "   Possible reasons:"
+            echo "   • VPS is turned off"
+            echo "   • SSH service not running"
+            echo "   • Firewall blocking port 22"
+            echo "   • Wrong IP address"
           fi
       
       - name: Connect to VPS
@@ -116,6 +148,7 @@ jobs:
             echo '  OS: ' \$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')
             echo '  Kernel: ' \$(uname -r)
             echo '  Uptime: ' \$(uptime -p)
+            echo '  Load: ' \$(uptime | awk -F'load average:' '{print $2}')
             echo ''
             echo '💾 MEMORY USAGE:'
             free -h
@@ -123,93 +156,42 @@ jobs:
             echo '💽 DISK USAGE:'
             df -h
             echo ''
-            echo '🌐 IP ADDRESSES:'
-            hostname -I
+            echo '🌐 NETWORK INTERFACES:'
+            ip addr show | grep inet | grep -v '127.0.0.1'
             echo ''
             echo '👥 LOGGED IN USERS:'
-            who || echo '  No users'
+            who || echo '  No users logged in'
             echo ''
             echo '📅 CURRENT TIME:'
             date
             echo '========================================='
           " || echo "❌ Connection to $VPS_IP failed"
       
-      - name: Install SSHX
-        if: env.PORT_OPEN == 'true'
+      - name: Connection Failed - Local Fallback
+        if: env.PORT_OPEN != 'true'
         run: |
           echo "========================================="
-          echo "🔗 INSTALLING SSHX.IO"
+          echo "⚠️  CONNECTION TO VPS FAILED"
           echo "========================================="
           echo ""
-          
-          # Install sshx
-          curl -sSf https://sshx.io/get | sh
-          
+          echo "Could not connect to $VPS_IP on port $VPS_PORT"
           echo ""
-          echo "✅ SSHX installed successfully"
+          echo "🔍 Troubleshooting:"
+          echo "  1. Verify this is your correct VPS IP"
+          echo "  2. Make sure your VPS is running"
+          echo "  3. Check that SSH service is enabled"
+          echo "  4. Ensure firewall allows port 22"
           echo ""
-      
-      - name: Get SSHX Help
-        if: env.PORT_OPEN == 'true'
-        run: |
-          echo "========================================="
-          echo "📚 SSHX HELP"
-          echo "========================================="
+          echo "📝 Your detected IP: $VPS_IP"
+          echo ""
+          echo "🔄 Trying localhost connection as fallback..."
           echo ""
           
-          # Show help to understand available commands
-          sshx --help
-          echo ""
-      
-      - name: Start SSHX Session
-        if: env.PORT_OPEN == 'true'
-        continue-on-error: true
-        run: |
-          echo "========================================="
-          echo "🚀 STARTING SSHX SESSION"
-          echo "========================================="
-          echo ""
-          
-          # Try different syntax options
-          echo "Attempting to start SSHX session..."
-          echo ""
-          
-          # Option 1: Basic SSHX
-          sshx &
-          SSHX_PID=$!
-          
-          # Give it time to start
-          sleep 5
-          
-          # Check if it's running
-          if ps -p $SSHX_PID > /dev/null; then
-            echo "✅ SSHX session started with PID: $SSHX_PID"
-            echo "📝 Check the logs above for the session URL"
-            echo ""
-            echo "Session active for 300 seconds..."
-            sleep 300
-            kill $SSHX_PID 2>/dev/null || true
-          else
-            echo "❌ SSHX session failed to start"
-          fi
-      
-      - name: Alternative SSHX Method
-        if: env.PORT_OPEN == 'true'
-        continue-on-error: true
-        run: |
-          echo "========================================="
-          echo "🔄 ALTERNATIVE SSHX METHOD"
-          echo "========================================="
-          echo ""
-          
-          # Try with different options
-          echo "Attempting SSHX with default settings..."
-          sshx --session &
-          sleep 10
-          pkill sshx || true
-          
-          echo ""
-          echo "For more information, visit: https://sshx.io/docs"
+          # Try localhost as fallback
+          sshpass -p "root" ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=5 \
+            -p 22 \
+            root@127.0.0.1 "echo '✅ Connected to localhost fallback'" || echo "❌ Localhost connection also failed"
       
       - name: Display Connection Summary
         if: always()
@@ -219,18 +201,19 @@ jobs:
           echo "           CONNECTION SUMMARY"
           echo "══════════════════════════════════════════════"
           echo ""
-          echo "   🌐 SSH IP:        $VPS_IP"
-          echo "   🔢 SSH Port:      $VPS_PORT"
-          echo "   👤 SSH User:      $VPS_USER"
-          echo "   📊 Status:        ${{ job.status }}"
-          echo "   🔗 SSHX:          Installed"
+          echo "   🌐 Detected VPS IP:  $VPS_IP"
+          echo "   🔢 SSH Port:         $VPS_PORT"
+          echo "   👤 SSH User:         $VPS_USER"
+          echo "   📊 Connection Status: ${{ env.PORT_OPEN == 'true' && 'SUCCESS' || 'FAILED' }}"
           echo ""
           echo "   🔗 Connection String:"
           echo "   ssh $VPS_USER@$VPS_IP -p $VPS_PORT"
           echo ""
           echo "   📁 Logs saved to artifact: vps-logs-run-${{ github.run_number }}"
           echo ""
-          echo "   📝 SSHX Documentation: https://sshx.io/docs"
+          echo "   💡 To test manually:"
+          echo "   curl ifconfig.me  # Get your IP"
+          echo "   ssh root@$(curl -s ifconfig.me) -p 22"
           echo ""
           echo "══════════════════════════════════════════════"
       
@@ -242,17 +225,15 @@ jobs:
           echo "VPS CONNECTION LOG - RUN #${{ github.run_number }}" >> logs/connection.log
           echo "=========================================" >> logs/connection.log
           echo "Date: $(date)" >> logs/connection.log
-          echo "SSH IP: $VPS_IP" >> logs/connection.log
+          echo "Detected VPS IP: $VPS_IP" >> logs/connection.log
           echo "SSH Port: $VPS_PORT" >> logs/connection.log
           echo "SSH User: $VPS_USER" >> logs/connection.log
-          echo "SSHX: Installed" >> logs/connection.log
+          echo "Port Open: ${PORT_OPEN:-false}" >> logs/connection.log
           echo "Status: ${{ job.status }}" >> logs/connection.log
           echo "=========================================" >> logs/connection.log
           
-          echo "IP: $VPS_IP" > logs/ssh-ip.txt
-          echo "Port: $VPS_PORT" >> logs/ssh-ip.txt
-          echo "User: $VPS_USER" >> logs/ssh-ip.txt
-          echo "Command: ssh $VPS_USER@$VPS_IP -p $VPS_PORT" >> logs/ssh-ip.txt
+          echo "$VPS_IP" > logs/vps-ip.txt
+          echo "ssh $VPS_USER@$VPS_IP -p $VPS_PORT" > logs/connection-command.txt
       
       - name: Upload Logs
         if: always()
@@ -272,6 +253,5 @@ jobs:
           echo "⏰ Next run in: 6 hours"
           echo "📆 30-day schedule: Active"
           echo "🔢 Run #: ${{ github.run_number }}"
-          echo "🌐 Connected to: $VPS_IP"
-          echo "🔗 SSHX: Installed"
+          echo "🌐 Your VPS IP: $VPS_IP"
           echo "========================================="
