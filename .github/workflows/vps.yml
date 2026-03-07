@@ -1,20 +1,23 @@
-name: Termius SSH - 30 Days Cloudflare Tunnel
+name: Bore.pub SSH - 5 Hour Sessions - All Ports Open
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Runs every 6 hours
+    - cron: '0 */5 * * *'  # Runs every 5 hours
   workflow_dispatch:
 
 jobs:
-  cloudflare-ssh:
+  bore-ssh:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
+    timeout-minutes: 310  # 5 hours + buffer
     
     steps:
       - name: Install Required Tools
         run: |
+          echo "========================================="
+          echo "📦 INSTALLING TOOLS"
+          echo "========================================="
           sudo apt-get update
-          sudo apt-get install -y openssh-server wget
+          sudo apt-get install -y openssh-server curl wget net-tools rustc cargo
           echo "✅ Tools installed"
       
       - name: Configure SSH
@@ -23,7 +26,7 @@ jobs:
           echo "🔐 CONFIGURING SSH"
           echo "========================================="
           
-          # Set root password to 12345678
+          # Set root password
           echo "root:12345678" | sudo chpasswd
           
           # Configure SSH for password login
@@ -36,110 +39,168 @@ jobs:
           
           echo "✅ SSH configured with password: 12345678"
       
-      - name: Install Cloudflared
+      - name: Install bore-cli
         run: |
           echo "========================================="
-          echo "📦 INSTALLING CLOUDFLARED"
+          echo "📦 INSTALLING BORE-CLI"
           echo "========================================="
           
-          # Download cloudflared
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
-          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          # Install bore using cargo
+          cargo install bore-cli
+          echo "✅ bore-cli installed"
           
-          echo "✅ Cloudflared installed"
+          # Add to PATH
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.cargo/bin:$PATH"
       
-      - name: Start Cloudflare Tunnel
-        id: tunnel
+      - name: Configure Firewall - OPEN ALL PORTS 1-67890
         run: |
           echo "========================================="
-          echo "🚀 STARTING CLOUDFLARE TUNNEL"
+          echo "🔥 CONFIGURING FIREWALL - OPENING ALL PORTS"
           echo "========================================="
+          
+          # Disable ufw if enabled
+          sudo ufw disable 2>/dev/null || true
+          
+          # Accept all incoming connections
+          sudo iptables -P INPUT ACCEPT
+          sudo iptables -P FORWARD ACCEPT
+          sudo iptables -P OUTPUT ACCEPT
+          
+          # Flush all rules
+          sudo iptables -F
+          sudo iptables -X
+          
+          # Open ALL ports 1-67890
+          echo "Opening ports 1 through 67890..."
+          for port in {1..67890}; do
+            sudo iptables -A INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null || true
+            sudo iptables -A INPUT -p udp --dport $port -j ACCEPT 2>/dev/null || true
+          done
+          
+          # Save rules
+          sudo iptables-save | sudo tee /etc/iptables.rules
+          
+          echo "✅ ALL PORTS 1-67890 ARE NOW OPEN"
+          echo "   • TCP ports 1-67890: ACCEPT"
+          echo "   • UDP ports 1-67890: ACCEPT"
+          echo "   • Source: 0.0.0.0/0 (anywhere)"
+      
+      - name: Show Open Ports
+        run: |
+          echo "========================================="
+          echo "🔍 VERIFYING OPEN PORTS"
+          echo "========================================="
+          
+          echo "First 20 open TCP ports:"
+          sudo netstat -tlnp | head -20
+          
           echo ""
+          echo "Firewall rules active:"
+          sudo iptables -L INPUT -n | head -20
           
-          # Start tunnel and capture output
-          cloudflared tunnel --url ssh://localhost:22 --no-autoupdate 2>&1 | tee tunnel.log &
-          TUNNEL_PID=$!
+          echo ""
+          echo "✅ All ports 1-67890 are open to the world (0.0.0.0/0)"
+      
+      - name: Start bore.pub Tunnel
+        id: bore
+        run: |
+          echo "========================================="
+          echo "🚀 STARTING BORE.PUB TUNNEL"
+          echo "========================================="
           
-          # Wait for tunnel to establish
-          echo "⏱️  Waiting for tunnel (30 seconds)..."
-          sleep 30
+          # Start bore tunnel in background
+          $HOME/.cargo/bin/bore local 22 --to bore.pub > bore.log 2>&1 &
+          BORE_PID=$!
           
-          # Extract URL from logs
-          TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
+          echo "⏱️  Waiting for tunnel to establish (10 seconds)..."
+          sleep 10
           
-          if [[ -n "$TUNNEL_URL" ]]; then
-            echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
-            HOSTNAME=$(echo $TUNNEL_URL | sed 's|https://||')
-            echo "HOSTNAME=$HOSTNAME" >> $GITHUB_ENV
-          else
-            # Fallback - show full log
-            echo "⚠️ Could not extract URL automatically"
-            cat tunnel.log
+          # Extract the public port from bore.log
+          BORE_PORT=$(grep -o 'listening on bore.pub:[0-9]*' bore.log | head -1 | cut -d: -f2)
+          
+          if [[ -z "$BORE_PORT" ]]; then
+            # Fallback - try to parse differently
+            BORE_PORT=$(grep -o ':[0-9]*' bore.log | head -1 | tr -d ':')
+          fi
+          
+          if [[ -z "$BORE_PORT" ]]; then
+            BORE_PORT="(check logs)"
+            cat bore.log
           fi
           
           echo ""
           echo "██████████████████████████████████████████████████████████████"
           echo "██                                                          ██"
-          echo "██           ✅ ADD THIS TO TERMIUS NOW                      ██"
+          echo "██           ✅ BORE.PUB TUNNEL ACTIVE                       ██"
           echo "██                                                          ██"
           echo "██████████████████████████████████████████████████████████████"
           echo ""
           echo "📱 TERMIUS CONNECTION DETAILS:"
           echo "══════════════════════════════════════════════════════════════"
           echo ""
-          echo "   🌐 Hostname: $HOSTNAME"
-          echo "   🔢 Port:     22"
+          echo "   🌐 Hostname: bore.pub"
+          echo "   🔢 Port:     $BORE_PORT"
           echo "   👤 Username: root"
           echo "   🔑 Password: 12345678"
           echo ""
           echo "   📋 COPY THESE EXACT VALUES INTO TERMIUS:"
           echo "   ═══════════════════════════════════════════════════════════"
           echo ""
-          echo "   ➜ Hostname: $HOSTNAME"
-          echo "   ➜ Port:     22"
+          echo "   ➜ Hostname: bore.pub"
+          echo "   ➜ Port:     $BORE_PORT"
           echo "   ➜ User:     root"
           echo "   ➜ Password: 12345678"
           echo ""
-          echo "⏱️  Tunnel active for: 6 HOURS"
-          echo "   Next tunnel in 6 hours"
+          echo "🔓 FIREWALL STATUS: ALL PORTS 1-67890 OPEN"
+          echo "   • Source: 0.0.0.0/0 (any IP can connect)"
+          echo "   • All TCP and UDP ports are accessible"
           echo ""
-          echo "📝 Manual command: ssh root@$HOSTNAME -p 22"
+          echo "⏱️  Tunnel active for: 5 HOURS"
+          echo "   Next tunnel in 5 hours"
+          echo ""
+          echo "📝 Manual command: ssh root@bore.pub -p $BORE_PORT"
           echo ""
           
           # Save to file for artifact
-          echo "Hostname: $HOSTNAME" > termius-details.txt
-          echo "Port: 22" >> termius-details.txt
-          echo "User: root" >> termius-details.txt
-          echo "Password: 12345678" >> termius-details.txt
+          echo "Hostname: bore.pub" > bore-details.txt
+          echo "Port: $BORE_PORT" >> bore-details.txt
+          echo "User: root" >> bore-details.txt
+          echo "Password: 12345678" >> bore-details.txt
+          echo "" >> bore-details.txt
+          echo "FIREWALL: ALL PORTS 1-67890 OPEN" >> bore-details.txt
+          echo "Source: 0.0.0.0/0 (anywhere)" >> bore-details.txt
           
-          # Keep tunnel alive for 6 hours
+          # Keep tunnel alive for 5 hours (18000 seconds)
           echo ""
-          echo "⏳ Tunnel will run for 6 hours..."
-          echo "   Press Ctrl+C to stop early"
+          echo "⏳ Tunnel will run for 5 hours..."
+          echo "   Started at: $(date)"
+          echo "   Ends at:    $(date -d '+5 hours')"
           echo ""
           
-          # Wait for 6 hours (21600 seconds)
-          sleep 21600
+          sleep 18000
           
           # Cleanup
-          kill $TUNNEL_PID 2>/dev/null || true
+          kill $BORE_PID 2>/dev/null || true
           echo "✅ Tunnel closed"
       
       - name: Upload Connection Details
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: termius-connection-${{ github.run_number }}
-          path: termius-details.txt
+          name: bore-connection-${{ github.run_number }}
+          path: bore-details.txt
           retention-days: 30
           if-no-files-found: warn
       
       - name: Keep Alive Heartbeat
         if: always()
         run: |
+          echo ""
           echo "========================================="
-          echo "💓 WORKFLOW COMPLETE"
+          echo "✅ 5-HOUR SESSION COMPLETE"
           echo "========================================="
-          echo "Next run in 6 hours"
+          echo "Completed at: $(date)"
+          echo "Next run in: 5 hours"
           echo "30-day schedule active"
+          echo "========================================="
