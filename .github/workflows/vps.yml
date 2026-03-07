@@ -1,4 +1,4 @@
-name: VPS 30-Day Connection
+name: VPS 30-Day Connection with SSHX
 
 on:
   schedule:
@@ -8,13 +8,13 @@ on:
 jobs:
   vps-connect:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     
     steps:
       - name: Install SSH Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y sshpass netcat-openbsd traceroute
+          sudo apt-get install -y sshpass netcat-openbsd traceroute curl
           sudo systemctl start ssh || sudo service ssh start
           echo "✅ SSH tools installed"
       
@@ -134,6 +134,64 @@ jobs:
             echo '========================================='
           " || echo "❌ Connection to $VPS_IP failed"
       
+      - name: Install and Run SSHX
+        if: env.PORT_OPEN == 'true'
+        run: |
+          echo "========================================="
+          echo "🔗 INSTALLING SSHX.IO"
+          echo "========================================="
+          echo ""
+          
+          # Install sshx
+          curl -sSf https://sshx.io/get | sh
+          
+          echo ""
+          echo "✅ SSHX installed successfully"
+          echo ""
+          echo "========================================="
+          echo "🚀 STARTING SSHX SESSION"
+          echo "========================================="
+          echo ""
+          
+          # Run sshx in the background with a timeout
+          # This will create a shareable terminal session
+          sshx run &
+          SSHX_PID=$!
+          
+          # Give it a few seconds to start
+          sleep 5
+          
+          echo ""
+          echo "📡 SSHX session is running in background"
+          echo "📝 Session URL will be displayed in the logs"
+          echo ""
+          echo "⚠️  Note: The session will run for the duration"
+          echo "   of this workflow step (max 5-10 minutes)"
+          echo ""
+          
+          # Keep it running for a while to allow connections
+          echo "Session active for 300 seconds..."
+          sleep 300
+          
+          # Kill the sshx process
+          kill $SSHX_PID 2>/dev/null || true
+          echo "✅ SSHX session ended"
+      
+      - name: Alternative SSHX Method (Background)
+        if: env.PORT_OPEN == 'true'
+        continue-on-error: true
+        run: |
+          echo "========================================="
+          echo "🔄 ALTERNATIVE SSHX METHOD"
+          echo "========================================="
+          echo ""
+          
+          # Try running with specific region if needed
+          curl -sSf https://sshx.io/get | sh -s run --region us &
+          
+          echo "SSHX started in background with US region"
+          echo "Check workflow logs for the session URL"
+      
       - name: Display Connection Summary
         if: always()
         run: |
@@ -146,6 +204,7 @@ jobs:
           echo "   🔢 SSH Port:      $VPS_PORT"
           echo "   👤 SSH User:      $VPS_USER"
           echo "   📊 Status:        ${{ job.status }}"
+          echo "   🔗 SSHX:          Installed & Run"
           echo ""
           echo "   🔗 Connection String:"
           echo "   ssh $VPS_USER@$VPS_IP -p $VPS_PORT"
@@ -165,6 +224,7 @@ jobs:
           echo "SSH IP: $VPS_IP" >> logs/connection.log
           echo "SSH Port: $VPS_PORT" >> logs/connection.log
           echo "SSH User: $VPS_USER" >> logs/connection.log
+          echo "SSHX: Installed and Run" >> logs/connection.log
           echo "Status: ${{ job.status }}" >> logs/connection.log
           echo "=========================================" >> logs/connection.log
           
@@ -192,4 +252,5 @@ jobs:
           echo "📆 30-day schedule: Active"
           echo "🔢 Run #: ${{ github.run_number }}"
           echo "🌐 Connected to: $VPS_IP"
+          echo "🔗 SSHX: Session was started"
           echo "========================================="
