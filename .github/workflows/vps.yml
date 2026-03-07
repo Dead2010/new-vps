@@ -1,53 +1,145 @@
-name: SSH for Termius - Serveo.net
+name: Termius SSH - 30 Days Cloudflare Tunnel
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */6 * * *'  # Runs every 6 hours
   workflow_dispatch:
 
 jobs:
-  serveo-ssh:
+  cloudflare-ssh:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 360  # 6 hours max
     
     steps:
-      - name: Setup SSH
+      - name: Install Required Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server
+          sudo apt-get install -y openssh-server wget
+          echo "✅ Tools installed"
+      
+      - name: Configure SSH
+        run: |
+          echo "========================================="
+          echo "🔐 CONFIGURING SSH"
+          echo "========================================="
+          
+          # Set root password to 12345678
           echo "root:12345678" | sudo chpasswd
+          
+          # Configure SSH for password login
           sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
           sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl restart ssh
+          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          
+          # Restart SSH
+          sudo systemctl restart ssh || sudo service ssh restart
+          
+          echo "✅ SSH configured with password: 12345678"
       
-      - name: Create Serveo Tunnel
+      - name: Install Cloudflared
         run: |
-          echo ""
           echo "========================================="
-          echo "🚀 CREATING SERVERO TUNNEL"
+          echo "📦 INSTALLING CLOUDFLARED"
+          echo "========================================="
+          
+          # Download cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          
+          echo "✅ Cloudflared installed"
+      
+      - name: Start Cloudflare Tunnel
+        id: tunnel
+        run: |
+          echo "========================================="
+          echo "🚀 STARTING CLOUDFLARE TUNNEL"
           echo "========================================="
           echo ""
           
-          # Create SSH tunnel to serveo.net
-          ssh -o StrictHostKeyChecking=no -R 80:localhost:22 serveo.net &
+          # Start tunnel and capture output
+          cloudflared tunnel --url ssh://localhost:22 --no-autoupdate 2>&1 | tee tunnel.log &
           TUNNEL_PID=$!
-          sleep 5
+          
+          # Wait for tunnel to establish
+          echo "⏱️  Waiting for tunnel (30 seconds)..."
+          sleep 30
+          
+          # Extract URL from logs
+          TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
+          
+          if [[ -n "$TUNNEL_URL" ]]; then
+            echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+            HOSTNAME=$(echo $TUNNEL_URL | sed 's|https://||')
+            echo "HOSTNAME=$HOSTNAME" >> $GITHUB_ENV
+          else
+            # Fallback - show full log
+            echo "⚠️ Could not extract URL automatically"
+            cat tunnel.log
+          fi
           
           echo ""
-          echo "✅ TUNNEL CREATED!"
+          echo "██████████████████████████████████████████████████████████████"
+          echo "██                                                          ██"
+          echo "██           ✅ ADD THIS TO TERMIUS NOW                      ██"
+          echo "██                                                          ██"
+          echo "██████████████████████████████████████████████████████████████"
           echo ""
           echo "📱 TERMIUS CONNECTION DETAILS:"
-          echo "══════════════════════════════════"
+          echo "══════════════════════════════════════════════════════════════"
           echo ""
-          echo "   Hostname: serveo.net"
-          echo "   Port:     22"
-          echo "   Username: root"
-          echo "   Password: 12345678"
+          echo "   🌐 Hostname: $HOSTNAME"
+          echo "   🔢 Port:     22"
+          echo "   👤 Username: root"
+          echo "   🔑 Password: 12345678"
           echo ""
-          echo "   Alternative port: 2222"
+          echo "   📋 COPY THESE EXACT VALUES INTO TERMIUS:"
+          echo "   ═══════════════════════════════════════════════════════════"
           echo ""
-          echo "⏱️  Tunnel active for 10 minutes"
+          echo "   ➜ Hostname: $HOSTNAME"
+          echo "   ➜ Port:     22"
+          echo "   ➜ User:     root"
+          echo "   ➜ Password: 12345678"
+          echo ""
+          echo "⏱️  Tunnel active for: 6 HOURS"
+          echo "   Next tunnel in 6 hours"
+          echo ""
+          echo "📝 Manual command: ssh root@$HOSTNAME -p 22"
           echo ""
           
-          sleep 600
+          # Save to file for artifact
+          echo "Hostname: $HOSTNAME" > termius-details.txt
+          echo "Port: 22" >> termius-details.txt
+          echo "User: root" >> termius-details.txt
+          echo "Password: 12345678" >> termius-details.txt
+          
+          # Keep tunnel alive for 6 hours
+          echo ""
+          echo "⏳ Tunnel will run for 6 hours..."
+          echo "   Press Ctrl+C to stop early"
+          echo ""
+          
+          # Wait for 6 hours (21600 seconds)
+          sleep 21600
+          
+          # Cleanup
           kill $TUNNEL_PID 2>/dev/null || true
+          echo "✅ Tunnel closed"
+      
+      - name: Upload Connection Details
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: termius-connection-${{ github.run_number }}
+          path: termius-details.txt
+          retention-days: 30
+          if-no-files-found: warn
+      
+      - name: Keep Alive Heartbeat
+        if: always()
+        run: |
+          echo "========================================="
+          echo "💓 WORKFLOW COMPLETE"
+          echo "========================================="
+          echo "Next run in 6 hours"
+          echo "30-day schedule active"
