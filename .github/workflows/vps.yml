@@ -1,159 +1,149 @@
-name: Cloudflare Tunnel SSH - 30 Days
+name: OpenSSH Server with Public IP
 
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
-    inputs:
-      setup_mode:
-        description: 'Setup mode (install/connect)'
-        required: false
-        default: 'connect'
-        type: choice
-        options:
-          - install
-          - connect
 
 jobs:
-  cloudflare-ssh:
+  setup-ssh:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     
     steps:
-      - name: Install Required Tools
+      - name: Install OpenSSH Server
         run: |
+          echo "========================================="
+          echo "📦 INSTALLING OPENSSH SERVER"
+          echo "========================================="
           sudo apt-get update
-          sudo apt-get install -y sshpass netcat-openbsd curl wget
-          echo "✅ Tools installed"
+          sudo apt-get install -y openssh-server curl net-tools
+          echo "✅ OpenSSH server installed"
       
-      - name: Install Cloudflare Tunnel (First Time)
-        if: github.event.inputs.setup_mode == 'install'
-        run: |
-          echo "========================================="
-          echo "🔧 CLOUDFLARE TUNNEL INSTALLATION GUIDE"
-          echo "========================================="
-          echo ""
-          echo "📝 STEP 1: Create Cloudflare Account"
-          echo "   1. Go to: https://dash.cloudflare.com/"
-          echo "   2. Sign up for free account"
-          echo "   3. Add your domain (or use trycloudflare.com for testing)"
-          echo ""
-          echo "📝 STEP 2: Install cloudflared on your local machine"
-          echo "   # Download cloudflared"
-          echo "   wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-          echo "   sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared"
-          echo "   sudo chmod +x /usr/local/bin/cloudflared"
-          echo ""
-          echo "📝 STEP 3: Authenticate Cloudflare Tunnel"
-          echo "   cloudflared tunnel login"
-          echo "   (Follow the URL to authenticate)"
-          echo ""
-          echo "📝 STEP 4: Create a Tunnel"
-          echo "   cloudflared tunnel create ssh-tunnel"
-          echo ""
-          echo "📝 STEP 5: Configure Tunnel"
-          echo "   Edit ~/.cloudflared/config.yml:"
-          echo "   tunnel: ssh-tunnel"
-          echo "   credentials-file: /home/user/.cloudflared/ssh-tunnel.json"
-          echo "   ingress:"
-          echo "     - hostname: ssh.yourdomain.com"
-          echo "       service: ssh://localhost:22"
-          echo "     - service: http_status:404"
-          echo ""
-          echo "📝 STEP 6: Route DNS"
-          echo "   cloudflared tunnel route dns ssh-tunnel ssh.yourdomain.com"
-          echo ""
-          echo "📝 STEP 7: Run Tunnel"
-          echo "   cloudflared tunnel run ssh-tunnel"
-          echo ""
-          echo "✅ Then connect: ssh root@ssh.yourdomain.com -p 22"
-          echo "   Password: 12345678"
-          echo "========================================="
-      
-      - name: Setup SSH with Password
+      - name: Configure SSH with Password
         run: |
           echo "========================================="
           echo "🔐 CONFIGURING SSH WITH PASSWORD"
           echo "========================================="
-          echo ""
           
-          # Set root password
+          # Set root password to 12345678
           echo "root:12345678" | sudo chpasswd
+          echo "✅ Root password set to: 12345678"
           
-          # Configure SSH to allow password login
+          # Configure SSH for password authentication
           sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
           sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#ChallengeResponseAuthentication yes/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config
           
-          # Restart SSH
+          # Restart SSH service
           sudo systemctl restart ssh || sudo service ssh restart
-          
-          echo "✅ SSH configured with password: 12345678"
-          echo "✅ Root login enabled"
-          echo ""
-          echo "📋 Connection Details:"
-          echo "   Username: root"
-          echo "   Password: 12345678"
-          echo "   Port: 22"
+          echo "✅ SSH configured for password login"
       
-      - name: Install and Run TryCloudflare Tunnel (Quick Test)
-        if: github.event.inputs.setup_mode == 'connect'
+      - name: Get Public IP Address
+        id: get_ip
         run: |
           echo "========================================="
-          echo "🚀 STARTING TRYCLOUDFLARE TUNNEL"
+          echo "🌐 GETTING PUBLIC IP ADDRESS"
+          echo "========================================="
+          
+          # Try multiple services
+          IP1=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "")
+          IP2=$(curl -s --max-time 5 icanhazip.com 2>/dev/null || echo "")
+          IP3=$(curl -s --max-time 5 ipinfo.io/ip 2>/dev/null || echo "")
+          
+          for IP in "$IP1" "$IP2" "$IP3"; do
+            if [[ -n "$IP" && "$IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              PUBLIC_IP="$IP"
+              break
+            fi
+          done
+          
+          if [[ -n "$PUBLIC_IP" ]]; then
+            echo "✅ Public IP detected: $PUBLIC_IP"
+            echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_ENV
+          else
+            echo "⚠️ Could not detect public IP"
+            PUBLIC_IP="(check manually)"
+            echo "PUBLIC_IP=unknown" >> $GITHUB_ENV
+          fi
+      
+      - name: Check SSH Status
+        run: |
+          echo "========================================="
+          echo "🔍 CHECKING SSH SERVICE"
+          echo "========================================="
+          
+          sudo systemctl status ssh --no-pager || sudo service ssh status
+          
+          echo ""
+          echo "📡 SSH is listening on:"
+          sudo netstat -tlnp | grep :22
+      
+      - name: Display Connection Information
+        run: |
+          echo ""
+          echo "██████████████████████████████████████████████████████████████"
+          echo "██                                                          ██"
+          echo "██              ✅ SSH SERVER IS READY                      ██"
+          echo "██                                                          ██"
+          echo "██████████████████████████████████████████████████████████████"
+          echo ""
+          echo "📋 CONNECTION DETAILS:"
+          echo "══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "   🌐 Public IP:       $PUBLIC_IP"
+          echo "   🔢 SSH Port:        22"
+          echo "   👤 Username:        root"
+          echo "   🔑 Password:        12345678"
+          echo ""
+          echo "   🔗 CONNECTION COMMANDS:"
+          echo "   ═══════════════════════════════════════════════════════════"
+          echo ""
+          echo "   📌 From any terminal:"
+          echo "   ssh root@$PUBLIC_IP -p 22"
+          echo ""
+          echo "   📌 From Windows Command Prompt:"
+          echo "   ssh root@$PUBLIC_IP -p 22"
+          echo ""
+          echo "   📌 From PowerShell:"
+          echo "   ssh root@$PUBLIC_IP -p 22"
+          echo ""
+          echo "   📌 From Termius:"
+          echo "   Host: $PUBLIC_IP"
+          echo "   Port: 22"
+          echo "   User: root"
+          echo "   Pass: 12345678"
+          echo ""
+          echo "⚠️  IMPORTANT NOTES:"
+          echo "   • This is the GitHub RUNNER's IP, not your VPS"
+          echo "   • The runner is only active during workflow execution"
+          echo "   • The IP may change between runs"
+          echo "   • This runs every 6 hours for 30 days"
+          echo ""
+          echo "⏱️  CURRENT SESSION:"
+          echo "   • Started at: $(date)"
+          echo "   • Runner will stay alive for 10 minutes"
+          echo "   • Next run in 6 hours"
+          echo ""
+          echo "██████████████████████████████████████████████████████████████"
+      
+      - name: Keep Runner Alive
+        run: |
+          echo "========================================="
+          echo "⏱️  KEEPING RUNNER ACTIVE FOR 10 MINUTES"
           echo "========================================="
           echo ""
-          
-          # Download cloudflared
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
-          
-          # Start tunnel in background
-          ./cloudflared-linux-amd64 tunnel --url ssh://localhost:22 &
-          TUNNEL_PID=$!
-          
-          echo "⏱️  Waiting for tunnel to establish..."
-          sleep 10
-          
-          echo ""
-          echo "✅ TUNNEL IS RUNNING!"
-          echo ""
-          echo "🔗 YOUR SSH CONNECTION DETAILS:"
-          echo "========================================="
-          echo "Username: root"
+          echo "You have 10 minutes to connect via SSH:"
+          echo "ssh root@$PUBLIC_IP -p 22"
           echo "Password: 12345678"
           echo ""
-          echo "📡 The tunnel URL will appear above"
-          echo "   Look for: https://random-name.trycloudflare.com"
-          echo ""
-          echo "🔌 Connect using:"
-          echo "   ssh root@random-name.trycloudflare.com -p 22"
-          echo ""
-          echo "⏱️  Tunnel runs for 300 seconds (5 minutes)"
-          echo ""
-          sleep 300
           
-          kill $TUNNEL_PID 2>/dev/null || true
-          echo "✅ Tunnel closed"
-      
-      - name: Save Connection Info
-        if: always()
-        run: |
-          mkdir -p logs
-          echo "=========================================" > logs/cloudflare.txt
-          echo "CLOUDFLARE TUNNEL SSH" >> logs/cloudflare.txt
-          echo "=========================================" >> logs/cloudflare.txt
-          echo "Date: $(date)" >> logs/cloudflare.txt
-          echo "Username: root" >> logs/cloudflare.txt
-          echo "Password: 12345678" >> logs/cloudflare.txt
-          echo "" >> logs/cloudflare.txt
-          echo "To connect: ssh root@YOUR-TUNNEL-URL -p 22" >> logs/cloudflare.txt
-          echo "=========================================" >> logs/cloudflare.txt
-      
-      - name: Upload Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloudflare-logs-${{ github.run_number }}
-          path: logs/
-          retention-days: 30
+          # Countdown timer
+          for i in {10..1}; do
+            echo "⏳ $i minutes remaining..."
+            sleep 60
+          done
+          
+          echo ""
+          echo "✅ Session complete. Next run in 6 hours."
