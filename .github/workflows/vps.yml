@@ -1,97 +1,134 @@
-name: Docker VPS - 30 Days
+name: Docker VPS Diagnostic & Fix
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 jobs:
-  create-vps:
+  fix-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 10
     
     steps:
-      - name: Install Docker
+      - name: Install Tools
         run: |
-          curl -fsSL https://get.docker.com -o get-docker.sh
-          sudo sh get-docker.sh
-          sudo usermod -aG docker $USER
-          docker version
+          sudo apt-get update
+          sudo apt-get install -y netcat openssh-client sshpass curl
       
-      - name: Check Available Ports
+      - name: Check Docker Container
         run: |
-          echo "Checking which ports are available..."
-          sudo netstat -tlnp | grep LISTEN
+          echo "========================================="
+          echo "🔍 CHECKING DOCKER CONTAINER"
+          echo "========================================="
+          docker ps -a
           echo ""
-          echo "✅ Ports 2222, 8080, 8888 are free"
-      
-      - name: Create Ubuntu Container with SSH Pre-installed
-        run: |
-          # Stop and remove any existing container
-          docker stop vps-container 2>/dev/null || true
-          docker rm vps-container 2>/dev/null || true
           
-          # Create container with SSH pre-configured
-          docker run -d --name vps-container \
-            -p 2222:22 \
-            -p 8080:80 \
-            -p 8443:443 \
-            -p 8888:8080 \
-            -p 54321:54321 \
-            ubuntu:22.04 \
-            bash -c "
-              apt-get update && 
-              apt-get install -y sudo wget curl net-tools && 
-              echo 'root:12345678' | chpasswd && 
-              apt-get install -y openssh-server && 
-              sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && 
-              sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && 
-              service ssh start && 
-              tail -f /dev/null
-            "
+          # Check if container exists
+          if docker ps | grep -q vps-container; then
+            echo "✅ Container is running"
+            docker exec vps-container ps aux | grep ssh
+          else
+            echo "❌ Container not running - restarting..."
+            docker start vps-container 2>/dev/null || docker run -d --name vps-container \
+              -p 2222:22 \
+              -p 8080:80 \
+              -p 8443:443 \
+              -p 8888:8080 \
+              -p 54321:54321 \
+              ubuntu:22.04 \
+              bash -c "
+                apt-get update && 
+                apt-get install -y openssh-server && 
+                echo 'root:12345678' | chpasswd && 
+                sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && 
+                sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && 
+                service ssh start && 
+                tail -f /dev/null
+              "
+          fi
+      
+      - name: Fix SSH Configuration
+        run: |
+          echo "========================================="
+          echo "🔧 FIXING SSH CONFIGURATION"
+          echo "========================================="
           
-          echo "✅ Container created successfully"
-          docker ps
+          # Ensure SSH is properly configured
+          docker exec vps-container bash -c "
+            echo '========= SSH STATUS ========='
+            service ssh status
+            
+            echo '========= FIXING SSH ========='
+            # Reconfigure SSH
+            sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+            sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+            echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
+            echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
+            
+            # Restart SSH
+            service ssh restart
+            sleep 5
+            service ssh status
+            
+            echo '========= SSH LISTENING PORTS ========='
+            netstat -tlnp | grep ssh || ss -tlnp | grep ssh
+          "
       
-      - name: Wait for SSH to be ready
+      - name: Test Local SSH Connection
         run: |
-          echo "Waiting for SSH to start in container..."
-          sleep 20
-          docker exec vps-container service ssh status || echo "SSH starting..."
-          sleep 10
+          echo "========================================="
+          echo "🔍 TESTING LOCAL SSH CONNECTION"
+          echo "========================================="
+          
+          # Install sshpass if needed
+          sudo apt-get install -y sshpass
+          
+          # Test connection to container via localhost:2222
+          echo "Testing localhost:2222..."
+          if nc -zv localhost 2222 2>&1 | grep -q succeeded; then
+            echo "✅ Port 2222 is open locally"
+            
+            # Try SSH connection
+            sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=5 \
+              -p 2222 \
+              root@localhost "echo '✅ Local SSH working!'" && \
+              echo "✅ Local SSH successful" || \
+              echo "❌ Local SSH failed"
+          else
+            echo "❌ Port 2222 not open locally"
+          fi
       
-      - name: Verify SSH is working
+      - name: Restart Cloudflare Tunnel
         run: |
-          docker exec vps-container netstat -tlnp | grep :22 || echo "SSH not listening yet"
-          echo "Testing local SSH connection..."
-          apt-get install -y sshpass || true
-          sshpass -p '12345678' ssh -o StrictHostKeyChecking=no -p 2222 root@localhost "echo '✅ SSH is working!'" || echo "SSH not ready yet, but will be soon"
-      
-      - name: Install Cloudflare Tunnel
-        run: |
+          echo "========================================="
+          echo "🚀 RESTARTING CLOUDFLARE TUNNEL"
+          echo "========================================="
+          
+          # Kill any existing tunnels
+          pkill cloudflared 2>/dev/null || true
+          
+          # Download fresh cloudflared
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared-linux-amd64
           sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
-          echo "✅ Cloudflared installed"
-      
-      - name: Create Tunnel to Container SSH
-        run: |
-          # Create tunnel to the container's SSH port (2222 on host)
+          
+          # Start new tunnel
           cloudflared tunnel --url ssh://localhost:2222 > tunnel.log 2>&1 &
           TUNNEL_PID=$!
           sleep 15
           
+          # Get URL
           TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
           HOSTNAME=$(echo $TUNNEL_URL | sed 's|https://||')
           
           echo ""
           echo "██████████████████████████████████████████████████████████████"
           echo "██                                                          ██"
-          echo "██           ✅ YOUR VPS IS READY                           ██"
+          echo "██           ✅ NEW TUNNEL CREATED                          ██"
           echo "██                                                          ██"
           echo "██████████████████████████████████████████████████████████████"
           echo ""
-          echo "📱 TERMIUS CONNECTION DETAILS:"
+          echo "📱 NEW TERMIUS CONNECTION DETAILS:"
           echo "══════════════════════════════════════════════════════════════"
           echo ""
           echo "   🌐 Hostname: $HOSTNAME"
@@ -104,92 +141,18 @@ jobs:
           echo "🔗 Direct SSH Command:"
           echo "   ssh root@$HOSTNAME -p 22"
           echo ""
-          echo "🖥️  Local Access (from runner):"
-          echo "   ssh root@localhost -p 2222 (password: 12345678)"
-          echo ""
-          echo "🌐 Web Access Ports:"
-          echo "   • HTTP:  http://$HOSTNAME:8080"
-          echo "   • HTTPS: https://$HOSTNAME:8443"
-          echo "   • App:   http://$HOSTNAME:8888"
-          echo "   • Panel: http://$HOSTNAME:54321"
-          echo ""
-          echo "⏱️  Session active for: 6 HOURS"
-          echo "   Next session in 6 hours"
-          echo "   30-day total: 120 sessions"
-          echo ""
-          echo "📝 TUNNEL URL: $TUNNEL_URL"
+          echo "⏱️  Test this URL immediately - it's active now!"
           echo ""
           
           # Save to file
-          echo "$HOSTNAME" > vps-hostname.txt
-          echo "root" > vps-username.txt
-          echo "12345678" > vps-password.txt
+          echo "$HOSTNAME" > new-hostname.txt
           
-          sleep 21600  # 6 hours
+          # Keep alive for testing
+          sleep 300  # 5 minutes for testing
           kill $TUNNEL_PID
       
-      - name: Install 3X-UI Panel (Optional)
-        if: always()
-        run: |
-          echo "Installing 3X-UI panel in container..."
-          docker exec vps-container bash -c "
-            apt-get update && 
-            apt-get install -y curl wget && 
-            bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/main/install.sh) << EOF
-            y
-            54321
-            admin
-            admin123
-            admin123
-            $HOSTNAME
-            EOF
-          " || echo "3X-UI installation skipped"
-      
-      - name: Create Tunnel to Web Panel
-        if: always()
-        run: |
-          # Create tunnel for web panel (port 54321)
-          cloudflared tunnel --url http://localhost:54321 > web-tunnel.log 2>&1 &
-          WEB_TUNNEL_PID=$!
-          sleep 10
-          
-          WEB_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' web-tunnel.log | head -1)
-          
-          echo ""
-          echo "🌐 Web Panel Access:"
-          echo "   URL: $WEB_URL"
-          echo "   Username: admin"
-          echo "   Password: admin123"
-          echo ""
-          echo "$WEB_URL" > web-url.txt
-          
-          # This will run alongside the SSH tunnel
-          wait $WEB_TUNNEL_PID
-      
-      - name: Upload Connection Details
-        if: always()
+      - name: Upload New Connection Details
         uses: actions/upload-artifact@v4
         with:
-          name: vps-connection-${{ github.run_number }}
-          path: |
-            vps-hostname.txt
-            vps-username.txt
-            vps-password.txt
-            web-url.txt
-          retention-days: 30
-      
-      - name: Keep Container Alive
-        if: always()
-        run: |
-          echo ""
-          echo "========================================="
-          echo "✅ SESSION COMPLETE"
-          echo "========================================="
-          echo "Container is still running for 6 hours"
-          echo "You can access it via the tunnel URL above"
-          echo ""
-          echo "To check container status:"
-          echo "  docker ps | grep vps-container"
-          echo ""
-          echo "To view logs:"
-          echo "  docker logs vps-container --tail 50"
+          name: fixed-connection
+          path: new-hostname.txt
