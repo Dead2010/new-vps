@@ -1,4 +1,4 @@
-name: Docker VPS - 30 Days
+name: RunC VPS - 30 Days
 
 on:
   schedule:
@@ -6,83 +6,45 @@ on:
   workflow_dispatch:
 
 jobs:
-  create-vps:
+  runc-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours
+    timeout-minutes: 360
     
     steps:
-      - name: Install Docker
+      - name: Install RunC
         run: |
-          curl -fsSL https://get.docker.com -o get-docker.sh
-          sudo sh get-docker.sh
-          sudo usermod -aG docker $USER
+          sudo apt-get update
+          sudo apt-get install -y runc
       
-      - name: Create Ubuntu Container
+      - name: Create RunC Container
         run: |
-          # Pull Ubuntu image
-          docker pull ubuntu:22.04
+          mkdir -p rootfs
+          docker export $(docker create ubuntu:22.04) | tar -C rootfs -xvf -
           
-          # Run container with SSH
-          docker run -d --name vps-container \
-            -p 22:22 \
-            -p 80:80 \
-            -p 443:443 \
-            -p 8080:8080 \
-            -p 54321:54321 \
-            ubuntu:22.04 \
-            bash -c "apt-get update && apt-get install -y openssh-server curl wget && echo 'root:12345678' | chpasswd && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && service ssh start && tail -f /dev/null"
+          cat > config.json << 'EOF'
+          {
+            "ociVersion": "1.0.0",
+            "process": {
+              "terminal": true,
+              "user": {"uid": 0, "gid": 0},
+              "args": ["/bin/bash", "-c", "service ssh start && sleep infinity"],
+              "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
+            },
+            "root": {
+              "path": "rootfs",
+              "readonly": false
+            },
+            "hostname": "vps",
+            "linux": {
+              "namespaces": [
+                {"type": "pid"},
+                {"type": "network"},
+                {"type": "ipc"},
+                {"type": "uts"},
+                {"type": "mount"}
+              ]
+            }
+          }
+          EOF
           
-          echo "✅ Container created"
-      
-      - name: Get Container IP
-        id: container_ip
-        run: |
-          CONTAINER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' vps-container)
-          echo "CONTAINER_IP=$CONTAINER_IP" >> $GITHUB_ENV
-          echo "Container IP: $CONTAINER_IP"
-      
-      - name: Install Cloudflare Tunnel
-        run: |
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
-          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
-      
-      - name: Create Tunnel
-        run: |
-          cloudflared tunnel --url ssh://localhost:22 > tunnel.log 2>&1 &
-          TUNNEL_PID=$!
-          sleep 15
-          
-          TUNNEL_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
-          HOSTNAME=$(echo $TUNNEL_URL | sed 's|https://||')
-          
-          echo ""
-          echo "██████████████████████████████████████████████████████████████"
-          echo "██                                                          ██"
-          echo "██           ✅ YOUR VPS IS READY                           ██"
-          echo "██                                                          ██"
-          echo "██████████████████████████████████████████████████████████████"
-          echo ""
-          echo "📱 TERMIUS CONNECTION DETAILS:"
-          echo "══════════════════════════════════════════════════════════════"
-          echo ""
-          echo "   🌐 Hostname: $HOSTNAME"
-          echo "   🔢 Port:     22"
-          echo "   👤 Username: root"
-          echo "   🔑 Password: 12345678"
-          echo ""
-          echo "   📋 COPY THESE EXACT VALUES INTO TERMIUS"
-          echo ""
-          echo "🔗 Direct SSH Command:"
-          echo "   ssh root@$HOSTNAME -p 22"
-          echo ""
-          echo "⏱️  Session active for: 6 HOURS"
-          echo "   Next session in 6 hours"
-          echo "   30-day total: 120 sessions"
-          echo ""
-          
-          # Save to file
-          echo "$HOSTNAME" > vps-hostname.txt
-          
-          sleep 21600  # 6 hours
-          kill $TUNNEL_PID
+          sudo runc run vps
