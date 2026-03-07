@@ -126,7 +126,7 @@ jobs:
           echo "========================================="
           echo ""
           
-          PORTS=(22 2222 22222 2022 8022 443 222 22222 2222)
+          PORTS=(22 2222 22222 2022 8022 443 222)
           FOUND_PORT=""
           
           for port in "${PORTS[@]}"; do
@@ -154,7 +154,7 @@ jobs:
           echo "========================================="
           echo ""
           
-          # Create a temporary script to run on VPS
+          # Connect to VPS and get system info
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
             -o ConnectTimeout=10 \
             -p $SSH_PORT \
@@ -167,7 +167,6 @@ jobs:
             echo '  OS: ' \$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')
             echo '  Kernel: ' \$(uname -r)
             echo '  Uptime: ' \$(uptime -p)
-            echo '  Load: ' \$(uptime | awk -F'load average:' '{print $2}')
             echo ''
             echo '💾 MEMORY USAGE:'
             free -h
@@ -175,94 +174,48 @@ jobs:
             echo '💽 DISK USAGE:'
             df -h
             echo ''
-            echo '🌐 IP ADDRESSES:'
-            hostname -I
-            echo ''
-            echo '👥 LOGGED IN USERS:'
-            who || echo '  No users logged in'
-            echo ''
             echo '📅 CURRENT TIME:'
             date
             echo '========================================='
           " || echo "❌ SSH connection failed - Check credentials"
       
-      - name: Install and Run SSHX
+      - name: Install SSHX
         if: env.PORT_OPEN == 'true' && env.ENABLE_SSHX == 'true'
         run: |
           echo "========================================="
-          echo "🔗 INSTALLING AND STARTING SSHX"
+          echo "🔗 INSTALLING SSHX"
           echo "========================================="
           echo ""
           
-          # Install sshx
           curl -sSf https://sshx.io/get | sh
-          
+          echo "✅ SSHX installed"
           echo ""
-          echo "✅ SSHX installed successfully"
-          echo ""
+      
+      - name: Run SSHX Session
+        if: env.PORT_OPEN == 'true' && env.ENABLE_SSHX == 'true'
+        continue-on-error: true
+        run: |
           echo "========================================="
           echo "🚀 STARTING SSHX SESSION"
           echo "========================================="
           echo ""
           
-          # Try different SSHX commands
-          echo "Attempting to start SSHX session..."
-          echo ""
-          
-          # Method 1: Basic sshx
-          echo "Method 1: sshx"
+          # Try to start SSHX
           sshx &
-          SSHX_PID1=$!
-          sleep 3
+          SSHX_PID=$!
+          sleep 5
           
-          # Check if it's running
-          if ps -p $SSHX_PID1 > /dev/null 2>&1; then
-            echo "✅ SSHX session started with PID: $SSHX_PID1"
+          if ps -p $SSHX_PID > /dev/null 2>&1; then
+            echo "✅ SSHX session running with PID: $SSHX_PID"
             echo "📝 Check the logs above for the session URL"
             echo ""
-            echo "Session active for 300 seconds..."
+            echo "Session will run for 300 seconds..."
             sleep 300
-            kill $SSHX_PID1 2>/dev/null || true
+            kill $SSHX_PID 2>/dev/null || true
+            echo "✅ SSHX session ended"
           else
-            echo "❌ Method 1 failed"
-            
-            # Method 2: sshx with socket
-            echo ""
-            echo "Method 2: sshx --socket"
-            sshx --socket &
-            SSHX_PID2=$!
-            sleep 3
-            
-            if ps -p $SSHX_PID2 > /dev/null 2>&1; then
-              echo "✅ SSHX session started with PID: $SSHX_PID2"
-              echo "📝 Check the logs above for the session URL"
-              echo ""
-              echo "Session active for 300 seconds..."
-              sleep 300
-              kill $SSHX_PID2 2>/dev/null || true
-            else
-              echo "❌ Method 2 failed"
-              
-              # Method 3: Using npx
-              echo ""
-              echo "Method 3: npx sshx"
-              npx sshx &
-              SSHX_PID3=$!
-              sleep 3
-              
-              if ps -p $SSHX_PID3 > /dev/null 2>&1; then
-                echo "✅ SSHX session started with PID: $SSHX_PID3"
-                echo "📝 Check the logs above for the session URL"
-                echo ""
-                echo "Session active for 300 seconds..."
-                sleep 300
-                kill $SSHX_PID3 2>/dev/null || true
-              else
-                echo "❌ All SSHX methods failed"
-                echo ""
-                echo "📝 For SSHX help, visit: https://sshx.io/docs"
-              fi
-            fi
+            echo "❌ Failed to start SSHX session"
+            echo "📝 Visit https://sshx.io/docs for help"
           fi
       
       - name: Save Connection Log
@@ -270,31 +223,26 @@ jobs:
         run: |
           mkdir -p logs
           
-          cat > logs/connection.txt << EOF
-=========================================
-VPS CONNECTION LOG - RUN #${{ github.run_number }}
-=========================================
-Date: $(date)
-IP: $SSH_IP
-Port: $SSH_PORT
-User: $SSH_USER
-Port Open: ${PORT_OPEN:-false}
-Found Port: ${FOUND_PORT:-none}
-SSHX Enabled: $ENABLE_SSHX
-Status: ${{ job.status }}
-
-Connection Command:
-ssh $SSH_USER@$SSH_IP -p $SSH_PORT
-
-=========================================
-EOF
+          echo "=========================================" > logs/connection.txt
+          echo "VPS CONNECTION LOG - RUN #${{ github.run_number }}" >> logs/connection.txt
+          echo "=========================================" >> logs/connection.txt
+          echo "Date: $(date)" >> logs/connection.txt
+          echo "IP: $SSH_IP" >> logs/connection.txt
+          echo "Port: $SSH_PORT" >> logs/connection.txt
+          echo "User: $SSH_USER" >> logs/connection.txt
+          echo "Port Open: ${PORT_OPEN:-false}" >> logs/connection.txt
+          echo "Found Port: ${FOUND_PORT:-none}" >> logs/connection.txt
+          echo "SSHX Enabled: $ENABLE_SSHX" >> logs/connection.txt
+          echo "Status: ${{ job.status }}" >> logs/connection.txt
+          echo "" >> logs/connection.txt
+          echo "Connection Command:" >> logs/connection.txt
+          echo "ssh $SSH_USER@$SSH_IP -p $SSH_PORT" >> logs/connection.txt
+          echo "=========================================" >> logs/connection.txt
           
-          # Save IP to separate file
           echo "$SSH_IP" > logs/vps-ip.txt
           echo "$SSH_PORT" > logs/ssh-port.txt
-          echo "$SSH_USER" > logs/ssh-user.txt
           
-          echo "📁 Logs saved successfully"
+          echo "✅ Logs saved"
       
       - name: Upload Logs
         if: always()
@@ -315,7 +263,7 @@ EOF
           echo "   🔢 SSH Port:      $SSH_PORT"
           echo "   👤 SSH User:      $SSH_USER"
           echo "   📊 Port Status:   ${PORT_OPEN:-false}"
-          echo "   🔗 SSHX:          ${ENABLE_SSHX}"
+          echo "   🔗 SSHX Enabled:  $ENABLE_SSHX"
           echo ""
           echo "   🔗 Connection String:"
           echo "   ssh $SSH_USER@$SSH_IP -p $SSH_PORT"
