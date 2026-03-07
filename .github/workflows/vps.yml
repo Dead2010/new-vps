@@ -34,7 +34,7 @@ jobs:
       - name: Install SSH Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y sshpass netcat-openbsd curl nmap
+          sudo apt-get install -y sshpass netcat-openbsd curl
           echo "✅ SSH tools installed"
       
       - name: Configure Connection
@@ -92,8 +92,8 @@ jobs:
           echo "========================================="
           echo ""
           
-          # Test 1: Basic port check
-          echo "📡 Test 1: Basic Port Check"
+          # Test port
+          echo "📡 Testing Port $SSH_PORT..."
           if nc -zv -w 5 $SSH_IP $SSH_PORT 2>&1 | grep -q "succeeded"; then
             echo "   ✅ Port $SSH_PORT is OPEN"
             echo "PORT_OPEN=true" >> $GITHUB_ENV
@@ -103,25 +103,38 @@ jobs:
           fi
           echo ""
           
-          # Test 2: Advanced port scan (if basic fails)
-          if [[ "$PORT_OPEN" == "false" ]]; then
-            echo "📡 Test 2: Quick Port Scan (common SSH ports)"
-            for port in 22 2222 22222 222 2022 8022; do
-              if nc -zv -w 2 $SSH_IP $port 2>&1 | grep -q "succeeded"; then
-                echo "   ✅ Found open port: $port"
-                echo "SUGGESTED_PORT=$port" >> $GITHUB_ENV
-                break
-              fi
-            done
-            echo ""
-          fi
-          
-          # Test 3: Ping test
-          echo "📡 Test 3: Ping Test"
+          # Ping test
+          echo "📡 Ping Test..."
           if ping -c 2 -W 3 $SSH_IP > /dev/null 2>&1; then
             echo "   ✅ Server is reachable (ping)"
           else
-            echo "   ⚠️  Server not responding to ping (firewall may block ICMP)"
+            echo "   ⚠️  Server not responding to ping"
+          fi
+      
+      - name: Try Common SSH Ports
+        if: env.PORT_OPEN == 'false'
+        run: |
+          echo "========================================="
+          echo "🔎 TRYING COMMON SSH PORTS"
+          echo "========================================="
+          echo ""
+          
+          PORTS=(22 2222 22222 2022 8022 443 222)
+          FOUND_PORT=""
+          
+          for port in "${PORTS[@]}"; do
+            echo "Testing port $port..."
+            if nc -zv -w 2 $SSH_IP $port 2>&1 | grep -q "succeeded"; then
+              echo "   ✅ Found open port: $port"
+              FOUND_PORT="$port"
+              echo "FOUND_PORT=$port" >> $GITHUB_ENV
+              break
+            fi
+          done
+          
+          if [[ -z "$FOUND_PORT" ]]; then
+            echo ""
+            echo "❌ No common SSH ports found open on $SSH_IP"
           fi
       
       - name: SSH Connection Attempt
@@ -130,7 +143,6 @@ jobs:
           echo "========================================="
           echo "🚀 ATTEMPTING SSH CONNECTION"
           echo "========================================="
-          echo "Connecting to $SSH_USER@$SSH_IP:$SSH_PORT"
           echo ""
           
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
@@ -142,65 +154,30 @@ jobs:
             echo 'Hostname: ' \$(hostname)
             echo 'Date: ' \$(date)
             echo 'Uptime: ' \$(uptime -p)
-            echo ''
-            echo '📊 System Info:'
-            echo '  OS: ' \$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')
-            echo '  Kernel: ' \$(uname -r)
-            echo ''
-            echo '💾 Memory:'
+            echo 'Memory:'
             free -h
-            echo ''
-            echo '💽 Disk:'
+            echo 'Disk:'
             df -h
-            echo '========================================='
           " || echo "❌ SSH connection failed - Check credentials"
-      
-      - name: Port Discovery Mode
-        if: env.PORT_OPEN != 'true'
-        run: |
-          echo "========================================="
-          echo "🔎 PORT DISCOVERY MODE"
-          echo "========================================="
-          echo ""
-          echo "Port $SSH_PORT is not accessible on $SSH_IP"
-          echo ""
-          echo "🔧 Try these common SSH ports manually:"
-          echo ""
-          echo "   ssh $SSH_USER@$SSH_IP -p 22     (default)"
-          echo "   ssh $SSH_USER@$SSH_IP -p 2222   (alternative)"
-          echo "   ssh $SSH_USER@$SSH_IP -p 22222  (alternative)"
-          echo "   ssh $SSH_USER@$SSH_IP -p 2022   (alternative)"
-          echo "   ssh $SSH_USER@$SSH_IP -p 8022   (alternative)"
-          echo ""
-          echo "📝 To try a different port, run this workflow manually"
-          echo "   and enter the port number in 'ssh_port' field"
-          echo ""
-          echo "💡 If you don't know your SSH port:"
-          echo "   • Check your VPS provider dashboard"
-          echo "   • Look for 'SSH port' in welcome email"
-          echo "   • Default is usually 22"
-          echo ""
-          echo "========================================="
       
       - name: Save Connection Log
         if: always()
         run: |
           mkdir -p logs
-          cat > logs/connection.txt << EOF
-=========================================
-VPS CONNECTION LOG - RUN #${{ github.run_number }}
-=========================================
-Date: $(date)
-IP: $SSH_IP
-Port: $SSH_PORT
-User: $SSH_USER
-Status: ${{ job.status }}
-Port Open: ${PORT_OPEN:-false}
-
-Connection Command:
-ssh $SSH_USER@$SSH_IP -p $SSH_PORT
-=========================================
-EOF
+          echo "=========================================" > logs/connection.txt
+          echo "VPS CONNECTION LOG - RUN #${{ github.run_number }}" >> logs/connection.txt
+          echo "=========================================" >> logs/connection.txt
+          echo "Date: $(date)" >> logs/connection.txt
+          echo "IP: $SSH_IP" >> logs/connection.txt
+          echo "Port: $SSH_PORT" >> logs/connection.txt
+          echo "User: $SSH_USER" >> logs/connection.txt
+          echo "Status: ${{ job.status }}" >> logs/connection.txt
+          echo "Port Open: ${PORT_OPEN:-false}" >> logs/connection.txt
+          echo "Found Port: ${FOUND_PORT:-none}" >> logs/connection.txt
+          echo "" >> logs/connection.txt
+          echo "Connection Command:" >> logs/connection.txt
+          echo "ssh $SSH_USER@$SSH_IP -p $SSH_PORT" >> logs/connection.txt
+          echo "=========================================" >> logs/connection.txt
           
           # Save IP to separate file
           echo "$SSH_IP" > logs/vps-ip.txt
@@ -214,7 +191,7 @@ EOF
           path: logs/
           retention-days: 30
       
-      - name: Summary
+      - name: Display Summary
         run: |
           echo ""
           echo "════════════════════════════════════════"
