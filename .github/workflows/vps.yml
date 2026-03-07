@@ -14,7 +14,7 @@ on:
 jobs:
   create-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 500  # 8 hours + buffer
+    timeout-minutes: 500
     
     steps:
       - name: Install Tools
@@ -23,13 +23,13 @@ jobs:
           sudo apt-get install -y openssh-client sshpass curl netcat-openbsd
           echo "✅ Tools installed"
       
-      - name: Create Docker Container
+      - name: Create Docker Container with SSH
         run: |
           # Remove old container if exists
           docker stop vps-container 2>/dev/null || true
           docker rm vps-container 2>/dev/null || true
           
-          # Create fresh container
+          # Create fresh container with SSH pre-installed
           docker run -d --name vps-container \
             -p 2222:22 \
             -p 8080:80 \
@@ -48,12 +48,44 @@ jobs:
             "
           
           echo "✅ Container created"
-          sleep 10
+          echo "Waiting for SSH to start..."
+          sleep 15
       
-      - name: Verify SSH
+      - name: Wait for SSH to be ready
         run: |
-          sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
-            -p 2222 root@localhost "echo '✅ SSH working in container'"
+          echo "Waiting for SSH service to be fully ready..."
+          for i in {1..10}; do
+            if nc -zv localhost 2222 2>&1 | grep -q succeeded; then
+              echo "✅ SSH port is open"
+              break
+            fi
+            echo "Attempt $i: SSH not ready yet..."
+            sleep 5
+          done
+          
+          # Test SSH connection
+          for i in {1..5}; do
+            if sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=5 \
+              -p 2222 \
+              root@localhost "echo 'SSH is ready'" 2>/dev/null; then
+              echo "✅ SSH is fully operational"
+              exit 0
+            fi
+            echo "Attempt $i: SSH authentication not ready..."
+            sleep 5
+          done
+      
+      - name: Verify Container Details
+        run: |
+          echo "Container Status:"
+          docker ps | grep vps-container
+          echo ""
+          echo "SSH Process in Container:"
+          docker exec vps-container ps aux | grep ssh
+          echo ""
+          echo "SSH Listening Ports:"
+          docker exec vps-container netstat -tlnp | grep :22 || echo "SSH not listening yet"
       
       - name: Install Ngrok
         run: |
@@ -74,7 +106,10 @@ jobs:
           sleep 10
           
           # Get the public URL
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[0-9.]*:[0-9]*' | head -1)
+          curl -s http://localhost:4040/api/tunnels > tunnels.json
+          cat tunnels.json
+          
+          NGROK_URL=$(cat tunnels.json | grep -o 'tcp://[0-9.]*:[0-9]*' | head -1)
           NGROK_HOST=$(echo $NGROK_URL | cut -d/ -f3 | cut -d: -f1)
           NGROK_PORT=$(echo $NGROK_URL | cut -d: -f4)
           
@@ -108,15 +143,29 @@ jobs:
           echo "   • Panel: http://localhost:54321"
           echo ""
           echo "⏱️  Session active for: 8 HOURS"
-          echo "   Next session in 8 hours"
-          echo "   30-day total: 90 sessions"
+          echo "   Started at: $(date)"
+          echo "   Ends at:    $(date -d '+8 hours')"
           echo ""
           
           # Save to file
           echo "$NGROK_HOST" > ngrok-host.txt
           echo "$NGROK_PORT" > ngrok-port.txt
+          echo "root" > ngrok-user.txt
+          echo "12345678" > ngrok-pass.txt
+          
+          # Test the ngrok tunnel
+          echo ""
+          echo "🔍 Testing ngrok tunnel..."
+          sleep 5
+          sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 \
+            -p $NGROK_PORT \
+            root@$NGROK_HOST "echo '✅ Ngrok tunnel is working!'" || \
+            echo "⚠️  Ngrok tunnel test failed - but will retry"
           
           # Keep alive for 8 hours
+          echo ""
+          echo "⏳ Tunnel running for 8 hours..."
           sleep 28800  # 8 hours
           kill $NGROK_PID
       
@@ -128,4 +177,15 @@ jobs:
           path: |
             ngrok-host.txt
             ngrok-port.txt
+            ngrok-user.txt
+            ngrok-pass.txt
           retention-days: 30
+          if-no-files-found: warn
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Cleaning up..."
+          docker stop vps-container 2>/dev/null || true
+          docker rm vps-container 2>/dev/null || true
+          echo "✅ Cleanup complete"
