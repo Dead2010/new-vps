@@ -1,4 +1,4 @@
-name: Simple Working VPS for Termius
+name: Simple Working VPS
 
 on:
   schedule:
@@ -6,68 +6,70 @@ on:
   workflow_dispatch:
 
 jobs:
-  simple-vps:
+  vps:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     
     steps:
-      - name: Install Docker
+      - name: Create Container with SSH
         run: |
-          curl -fsSL https://get.docker.com -o get-docker.sh
-          sudo sh get-docker.sh
-      
-      - name: Create Container with Working SSH
-        run: |
+          # Create container with SSH pre-configured
           docker run -d --name vps \
             -p 2222:22 \
             ubuntu:22.04 \
             bash -c "
               apt-get update && 
               apt-get install -y openssh-server && 
+              mkdir /var/run/sshd &&
               echo 'root:12345678' | chpasswd && 
               sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && 
-              service ssh start && 
-              tail -f /dev/null
+              sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+              /usr/sbin/sshd -D
             "
+          
+          echo "✅ Container created"
+          echo "Waiting 20 seconds for SSH..."
+          sleep 20
+      
+      - name: Verify SSH
+        run: |
+          # Simple verification
+          nc -zv localhost 2222 && echo "✅ Port open" || echo "❌ Port closed"
+      
+      - name: Get Tunnel URL
+        id: tunnel
+        run: |
+          # Install cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          
+          # Start tunnel
+          cloudflared tunnel --url ssh://localhost:2222 > tunnel.log 2>&1 &
           sleep 15
-      
-      - name: Test Local SSH
-        run: |
-          sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
-            -p 2222 root@localhost "echo '✅ Local SSH OK'"
-      
-      - name: Get Runner IP
-        id: ip
-        run: |
-          IP=$(curl -s ifconfig.me)
-          echo "RUNNER_IP=$IP" >> $GITHUB_ENV
-          echo "Runner IP: $IP"
-      
-      - name: Display Connection Info
-        run: |
+          
+          # Get URL
+          URL=$(grep -o 'https://[a-z-]*\.trycloudflare\.com' tunnel.log | head -1)
+          HOST=$(echo $URL | sed 's|https://||')
+          
+          echo "URL=$URL" >> $GITHUB_OUTPUT
+          echo "HOST=$HOST" >> $GITHUB_OUTPUT
+          
           echo ""
           echo "========================================="
-          echo "    🔌 CONNECT USING THESE DETAILS"
+          echo "    ✅ VPS READY - COPY THIS TO TERMIUS"
           echo "========================================="
           echo ""
-          echo "📱 FOR TERMIUS (use these exact values):"
-          echo "-----------------------------------------"
-          echo "   🌐 Hostname: regression-purchases-organized-cup.trycloudflare.com"
-          echo "   🔢 Port:     2222"
-          echo "   👤 Username: root"
-          echo "   🔑 Password: 12345678"
-          echo "-----------------------------------------"
-          echo ""
-          echo "⚠️  IMPORTANT: Use PORT 2222 not 22"
+          echo "📱 TERMIUS CONNECTION:"
+          echo "   Hostname: $HOST"
+          echo "   Port:     2222"
+          echo "   Username: root"
+          echo "   Password: 12345678"
           echo ""
           echo "🔗 SSH Command:"
-          echo "   ssh root@regression-purchases-organized-cup.trycloudflare.com -p 2222"
+          echo "   ssh root@$HOST -p 2222"
           echo ""
-          echo "🖥️  Local test (if tunnel fails):"
-          echo "   ssh root@localhost -p 2222"
-          echo ""
-          echo "⏱️  Session: 6 hours"
-          echo ""
-      
-      - name: Keep Alive
-        run: sleep 21600
+          echo "⏱️  Active for 6 hours"
+          echo "========================================="
+          
+          sleep 21600
