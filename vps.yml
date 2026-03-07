@@ -1,0 +1,76 @@
+name: VPS 30-Day Connection
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      vps_ip:
+        description: 'VPS IP Address'
+        required: false
+        type: string
+
+jobs:
+  connect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: Install SSH
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+      
+      - name: Set VPS Details
+        run: |
+          # !!! CHANGE THIS TO YOUR ACTUAL VPS IP !!!
+          DEFAULT_IP="your-vps-ip-here"
+          
+          if [[ -n "${{ github.event.inputs.vps_ip }}" ]]; then
+            IP="${{ github.event.inputs.vps_ip }}"
+          else
+            IP="$DEFAULT_IP"
+          fi
+          
+          echo "IP=$IP" >> $GITHUB_ENV
+          echo "USER=root" >> $GITHUB_ENV
+          echo "PASS=root" >> $GITHUB_ENV
+          
+          echo "================================="
+          echo "VPS: $IP"
+          echo "User: root"
+          echo "================================="
+          
+          if [[ "$IP" == "your-vps-ip-here" ]]; then
+            echo "❌ ERROR: Please set your VPS IP"
+            exit 1
+          fi
+      
+      - name: Connect to VPS
+        run: |
+          echo "Connecting at $(date)"
+          echo ""
+          
+          sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no \
+            root@$IP "
+            echo '✅ CONNECTED SUCCESSFULLY'
+            echo ''
+            echo '📋 SYSTEM INFO:'
+            echo '  Hostname: ' \$(hostname)
+            echo '  Uptime: ' \$(uptime -p)
+            echo '  Date: ' \$(date)
+            echo ''
+            echo '💾 MEMORY:'
+            free -h
+            echo ''
+            echo '💽 DISK:'
+            df -h
+          " || echo "❌ Connection failed"
+      
+      - name: Next Run
+        run: |
+          echo ""
+          echo "================================="
+          echo "Next run in 6 hours"
+          echo "30-day schedule active"
+          echo "================================="
