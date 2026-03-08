@@ -1,4 +1,4 @@
-name: Bore VPS
+name: Bore SSH VPS
 
 on:
   workflow_dispatch:
@@ -9,42 +9,32 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Update system
-        run: sudo apt-get update
 
-      - name: Install SSH server
-        run: |
-          sudo apt-get install -y openssh-server curl
-          sudo mkdir -p /var/run/sshd
-          echo "runner:12345678" | sudo chpasswd
+    - name: Install SSH
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y openssh-server curl
+        sudo mkdir -p /var/run/sshd
 
-      - name: Enable SSH password login
-        run: |
-          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/g' /etc/ssh/sshd_config
-          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config
-          sudo service ssh restart
+    - name: Set password
+      run: |
+        echo "runner:12345678" | sudo chpasswd
 
-      - name: Download Bore
-        run: |
-          curl -L https://github.com/ekzhang/bore/releases/latest/download/bore-x86_64-unknown-linux-musl -o bore
-          chmod +x bore
+    - name: Enable password login
+      run: |
+        sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sudo service ssh restart
 
-      - name: Start Bore tunnel
-        run: |
-          ./bore local 22 --to bore.pub > bore.log 2>&1 &
-          sleep 8
-          cat bore.log
+    - name: Install Bore
+      run: |
+        curl -L https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-x86_64-unknown-linux-musl -o bore
+        chmod +x bore
 
-      - name: SSH Login Info
-        run: |
-          echo "================================"
-          echo "SSH HOST: bore.pub"
-          echo "USERNAME: runner"
-          echo "PASSWORD: 12345678"
-          echo "PORT: check above line showing bore.pub:PORT"
-          echo "Example:"
-          echo "ssh runner@bore.pub -p PORT"
-          echo "================================"
+    - name: Start tunnel
+      run: |
+        echo "Starting bore tunnel..."
+        ./bore local 22 --to bore.pub
 
-      - name: Keep VPS running
-        run: sleep 21600
+    - name: Keep runner alive
+      run: sleep 21600
