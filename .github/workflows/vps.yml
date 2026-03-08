@@ -1,4 +1,4 @@
-name: Bore.pub Direct SSH - 30 Days
+name: Termius 30-Day Persistent Access
 
 on:
   schedule:
@@ -6,29 +6,23 @@ on:
   workflow_dispatch:
 
 jobs:
-  bore-direct:
+  termius-tunnel:
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 hours
     
     steps:
-      - name: Install SSH and Tools
+      - name: Install Required Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server sshpass curl netcat-openbsd build-essential
+          sudo apt-get install -y openssh-server sshpass curl netcat-openbsd build-essential nodejs npm
           
           # Configure SSH on runner
-          sudo systemctl start ssh || sudo service ssh start
           echo "runner:12345678" | sudo chpasswd
-          
-          # Allow runner user SSH access
           sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
           sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl restart ssh || sudo service ssh restart
+          sudo systemctl restart ssh
           
-          echo "✅ SSH configured on runner"
-          echo "   Username: runner"
-          echo "   Password: 12345678"
-          echo "   Port: 22"
+          echo "✅ SSH configured - User: runner, Password: 12345678"
       
       - name: Install Rust and bore-cli
         run: |
@@ -39,122 +33,246 @@ jobs:
           # Install bore-cli
           ~/.cargo/bin/cargo install bore-cli
           echo "✅ bore-cli installed"
+          
+          # Add to PATH
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       
-      - name: Start bore.pub Tunnel
-        id: bore
+      - name: Install PM2 and Additional Tools
         run: |
-          source ~/.cargo/env
+          sudo npm install -g pm2 localtunnel
           
-          # Kill any existing bore processes
-          pkill bore 2>/dev/null || true
+          # Install cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
           
-          # Start bore tunnel for SSH (port 22)
-          echo "Starting bore.pub tunnel for SSH port 22..."
-          ~/.cargo/bin/bore local 22 --to bore.pub > bore.log 2>&1 &
-          BORE_PID=$!
+          echo "✅ PM2 and tunnel tools installed"
+      
+      - name: Create Persistent Tunnel Script
+        run: |
+          cat > /home/runner/termius-tunnel.js << 'EOF'
+          const { exec } = require('child_process');
+          const fs = require('fs');
+          const os = require('os');
+
+          const LOG_FILE = '/home/runner/tunnel.log';
+          const HOST_FILE = '/home/runner/termius-host.txt';
+
+          function log(message) {
+              const timestamp = new Date().toISOString();
+              fs.appendFileSync(LOG_FILE, `[${timestamp}] ${message}\n`);
+              console.log(`[${timestamp}] ${message}`);
+          }
+
+          function saveConnection(host, port, method) {
+              const content = 
+  `=========================================
+  ✅ TERMIUS CONNECTION DETAILS
+  =========================================
+  📅 Updated: ${new Date().toISOString()}
+  🌐 Host: ${host}
+  🔢 Port: ${port}
+  👤 User: runner
+  🔑 Pass: 12345678
+  🔗 Method: ${method}
+  =========================================
+  📱 Add to Termius with these exact values!
+  =========================================`;
+              
+              fs.writeFileSync(HOST_FILE, content);
+              console.log(content);
+          }
+
+          function startTunnel() {
+              const tunnels = [
+                  {
+                      name: 'bore',
+                      cmd: 'bore local 22 --to bore.pub',
+                      extractUrl: (output) => {
+                          const match = output.match(/listening at bore.pub:(\d+)/);
+                          return match ? { host: 'bore.pub', port: match[1] } : null;
+                      }
+                  },
+                  {
+                      name: 'cloudflared',
+                      cmd: 'cloudflared tunnel --url ssh://localhost:22 --no-autoupdate',
+                      extractUrl: (output) => {
+                          const match = output.match(/https:\/\/([a-z0-9-]+\.trycloudflare\.com)/);
+                          return match ? { host: match[1], port: '22' } : null;
+                      }
+                  },
+                  {
+                      name: 'localtunnel',
+                      cmd: 'lt --port 22 --subdomain termius-' + Math.random().toString(36).substring(7),
+                      extractUrl: (output) => {
+                          const match = output.match(/https:\/\/([a-z0-9-]+\.loca\.lt)/);
+                          return match ? { host: match[1], port: '22' } : null;
+                      }
+                  }
+              ];
+
+              let currentTunnel = 0;
+              
+              function tryTunnel() {
+                  if (currentTunnel >= tunnels.length) {
+                      log('All tunnels failed, restarting cycle in 30s...');
+                      currentTunnel = 0;
+                      setTimeout(tryTunnel, 30000);
+                      return;
+                  }
+
+                  const tunnel = tunnels[currentTunnel];
+                  log(`Starting ${tunnel.name} tunnel...`);
+                  
+                  const process = exec(tunnel.cmd);
+                  
+                  let urlFound = false;
+                  const timeout = setTimeout(() => {
+                      if (!urlFound) {
+                          log(`${tunnel.name} timeout, trying next...`);
+                          process.kill();
+                          currentTunnel++;
+                          tryTunnel();
+                      }
+                  }, 30000);
+
+                  process.stdout.on('data', (data) => {
+                      log(`${tunnel.name}: ${data}`);
+                      
+                      const url = tunnel.extractUrl(data);
+                      if (url && !urlFound) {
+                          urlFound = true;
+                          clearTimeout(timeout);
+                          
+                          saveConnection(url.host, url.port, tunnel.name);
+                          
+                          log(`✅ CONNECTION READY!`);
+                          log(`📁 Details saved to ${HOST_FILE}`);
+                      }
+                  });
+
+                  process.stderr.on('data', (data) => {
+                      log(`${tunnel.name} error: ${data}`);
+                  });
+
+                  process.on('close', (code) => {
+                      log(`${tunnel.name} exited with code ${code}`);
+                      if (!urlFound) {
+                          currentTunnel++;
+                          tryTunnel();
+                      }
+                  });
+              }
+
+              tryTunnel();
+          }
+
+          startTunnel();
+          EOF
+          
+          echo "✅ Tunnel script created"
+      
+      - name: Start Persistent Tunnel with PM2
+        run: |
+          # Kill any existing processes
+          pm2 delete all 2>/dev/null || true
+          
+          # Start tunnel with PM2
+          pm2 start /home/runner/termius-tunnel.js --name termius-tunnel
+          pm2 save
           
           # Wait for tunnel to establish
-          echo "Waiting for tunnel (15 seconds)..."
-          sleep 15
+          echo "Waiting for tunnel to establish (30 seconds)..."
+          sleep 30
           
-          # Extract port from logs
-          BORE_PORT=$(grep -o 'listening at .*:[0-9]*' bore.log | grep -o '[0-9]*$' | head -1)
+          # Display connection details
+          echo ""
+          echo "========================================="
+          echo "📱 TERMIUS CONNECTION DETAILS"
+          echo "========================================="
           
-          if [ -z "$BORE_PORT" ]; then
-            BORE_PORT=$(grep -o ':[0-9]*' bore.log | grep -o '[0-9]*' | tail -1)
-          fi
-          
-          if [ -z "$BORE_PORT" ]; then
-            # Fallback - show logs
-            echo "⚠️ Could not extract port automatically"
-            cat bore.log
-            BORE_PORT="UNKNOWN (check logs)"
-          fi
-          
-          echo ""
-          echo "██████████████████████████████████████████████████████████████"
-          echo "██                                                          ██"
-          echo "██           ✅ BORE.PUB SSH IS READY                       ██"
-          echo "██                                                          ██"
-          echo "██████████████████████████████████████████████████████████████"
-          echo ""
-          echo "📱 TERMIUS / SSH CONNECTION DETAILS:"
-          echo "══════════════════════════════════════════════════════════════"
-          echo ""
-          echo "   🌐 Hostname: bore.pub"
-          echo "   🔢 Port:     $BORE_PORT"
-          echo "   👤 Username: runner"
-          echo "   🔑 Password: 12345678"
-          echo ""
-          echo "   📋 COPY THESE EXACT VALUES:"
-          echo "   ---------------------------------------"
-          echo "   Host: bore.pub"
-          echo "   Port: $BORE_PORT"
-          echo "   User: runner"
-          echo "   Pass: 12345678"
-          echo "   ---------------------------------------"
-          echo ""
-          echo "🔗 SSH COMMAND:"
-          echo "   ssh runner@bore.pub -p $BORE_PORT"
-          echo ""
-          echo "🔍 TEST CONNECTION:"
-          echo "   sshpass -p '12345678' ssh -o StrictHostKeyChecking=no runner@bore.pub -p $BORE_PORT 'echo ✅ Connected'"
-          echo ""
-          echo "⏱️  SESSION DETAILS:"
-          echo "   • Started: $(date)"
-          echo "   • Ends:    $(date -d '+6 hours')"
-          echo "   • Duration: 6 hours"
-          echo "   • Next session in 6 hours"
-          echo "   • 30-day total: 120 sessions"
-          echo ""
-          
-          # Save connection details
-          echo "$BORE_PORT" > bore-port.txt
-          echo "bore.pub" > bore-host.txt
-          echo "runner" > bore-user.txt
-          echo "12345678" > bore-pass.txt
-          
-          # Test the tunnel
-          echo "🔍 Testing tunnel connection..."
-          sleep 5
-          if sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=10 \
-            -p $BORE_PORT \
-            runner@bore.pub "echo '✅ Tunnel is working!'" 2>/dev/null; then
-            echo "✅ Tunnel test successful!"
+          if [ -f "/home/runner/termius-host.txt" ]; then
+            cat /home/runner/termius-host.txt
           else
-            echo "⚠️ Tunnel test failed - but tunnel may still work"
-            echo "   Try connecting manually with: ssh runner@bore.pub -p $BORE_PORT"
+            echo "⏳ Tunnel starting... Check logs: pm2 logs termius-tunnel"
           fi
           
-          # Keep tunnel alive for 6 hours
           echo ""
-          echo "⏳ Tunnel running for 6 hours..."
-          echo "   Press Ctrl+C to stop early (will auto-restart in 6 hours)"
+          echo "🔄 PM2 Status:"
+          pm2 list
           
-          sleep 21600  # 6 hours
-          kill $BORE_PID 2>/dev/null || true
-          echo "✅ Session completed. Next run in 6 hours."
+          # Save connection info for artifact
+          mkdir -p termius-info
+          cp /home/runner/termius-host.txt termius-info/ 2>/dev/null || echo "No host file yet" > termius-info/status.txt
+          pm2 list > termius-info/pm2-status.txt
+      
+      - name: Create Auto-Restart Crontab
+        run: |
+          cat > /home/runner/check-tunnel.sh << 'EOF'
+          #!/bin/bash
+          echo "$(date) - Checking tunnel..." >> /home/runner/tunnel-cron.log
+          
+          if ! pm2 show termius-tunnel 2>/dev/null | grep -q "online"; then
+              echo "Tunnel down, restarting..." >> /home/runner/tunnel-cron.log
+              cd /home/runner
+              pm2 start termius-tunnel.js --name termius-tunnel
+              sleep 10
+          fi
+          
+          if [ -f "/home/runner/termius-host.txt" ]; then
+              echo "=== CURRENT CONNECTION ===" >> /home/runner/tunnel-cron.log
+              cat /home/runner/termius-host.txt >> /home/runner/tunnel-cron.log
+          fi
+          EOF
+          
+          chmod +x /home/runner/check-tunnel.sh
+          
+          # Add to crontab (runs every 6 hours)
+          (crontab -l 2>/dev/null; echo "0 */6 * * * /home/runner/check-tunnel.sh") | crontab -
+          
+          echo "✅ Auto-check scheduled every 6 hours"
       
       - name: Upload Connection Details
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bore-connection-${{ github.run_number }}
+          name: termius-connection-${{ github.run_number }}
           path: |
-            bore-port.txt
-            bore-host.txt
-            bore-user.txt
-            bore-pass.txt
+            termius-info/
+            /home/runner/termius-host.txt
+            /home/runner/tunnel.log
           retention-days: 30
       
-      - name: Session Summary
-        if: always()
+      - name: Keep Alive and Monitor
         run: |
           echo ""
           echo "========================================="
-          echo "✅ SESSION COMPLETE"
+          echo "🚀 TUNNEL RUNNING FOR 6 HOURS"
           echo "========================================="
-          echo "Next run in 6 hours"
-          echo "30-day schedule active"
-          echo "========================================="
+          echo ""
+          echo "📊 To monitor:"
+          echo "   pm2 logs termius-tunnel"
+          echo "   cat /home/runner/termius-host.txt"
+          echo ""
+          echo "⏱️  Session active until: $(date -d '+6 hours')"
+          echo ""
+          
+          # Monitor and display updates every hour
+          for i in {1..6}; do
+            sleep 3600
+            echo ""
+            echo "========================================="
+            echo "🕐 Hour $i of 6 - $(date)"
+            echo "========================================="
+            if [ -f "/home/runner/termius-host.txt" ]; then
+              cat /home/runner/termius-host.txt
+            fi
+            echo ""
+            echo "PM2 Status:"
+            pm2 list
+          done
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "✅ Session complete. Next run in 6 hours."
