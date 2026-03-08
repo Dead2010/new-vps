@@ -1,4 +1,4 @@
-name: Bore.pub VPS - 30 Days (6-Hour Sessions)
+name: Bore.pub Direct SSH - 30 Days
 
 on:
   schedule:
@@ -6,57 +6,29 @@ on:
   workflow_dispatch:
 
 jobs:
-  bore-vps:
+  bore-direct:
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 hours
     
     steps:
-      - name: Install Required Tools
+      - name: Install SSH and Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y openssh-server sshpass curl netcat-openbsd build-essential
-          echo "✅ Tools installed"
-      
-      - name: Create Container with SSH
-        run: |
-          # Remove old container if exists
-          docker stop vps 2>/dev/null || true
-          docker rm vps 2>/dev/null || true
           
-          # Create fresh container
-          docker run -d --name vps \
-            -p 2222:22 \
-            ubuntu:22.04 \
-            bash -c "
-              apt-get update && 
-              apt-get install -y openssh-server && 
-              echo 'root:12345678' | chpasswd && 
-              sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && 
-              sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && 
-              service ssh start && 
-              tail -f /dev/null
-            "
+          # Configure SSH on runner
+          sudo systemctl start ssh || sudo service ssh start
+          echo "runner:12345678" | sudo chpasswd
           
-          echo "✅ Container created"
-          echo "Waiting for SSH to start..."
-          sleep 20
-      
-      - name: Verify Local SSH
-        run: |
-          echo "Testing local SSH connection..."
-          for i in {1..10}; do
-            if sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=5 \
-              -p 2222 \
-              root@localhost "echo 'SSH_READY'" 2>/dev/null; then
-              echo "✅ Local SSH is working on port 2222"
-              exit 0
-            fi
-            echo "Attempt $i/10: Waiting for SSH..."
-            sleep 5
-          done
-          echo "❌ SSH failed to start"
-          exit 1
+          # Allow runner user SSH access
+          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh || sudo service ssh restart
+          
+          echo "✅ SSH configured on runner"
+          echo "   Username: runner"
+          echo "   Password: 12345678"
+          echo "   Port: 22"
       
       - name: Install Rust and bore-cli
         run: |
@@ -76,13 +48,13 @@ jobs:
           # Kill any existing bore processes
           pkill bore 2>/dev/null || true
           
-          # Start bore tunnel in background
-          echo "Starting bore.pub tunnel..."
-          ~/.cargo/bin/bore local 2222 --to bore.pub > bore.log 2>&1 &
+          # Start bore tunnel for SSH (port 22)
+          echo "Starting bore.pub tunnel for SSH port 22..."
+          ~/.cargo/bin/bore local 22 --to bore.pub > bore.log 2>&1 &
           BORE_PID=$!
           
           # Wait for tunnel to establish
-          echo "Waiting for tunnel..."
+          echo "Waiting for tunnel (15 seconds)..."
           sleep 15
           
           # Extract port from logs
@@ -96,13 +68,13 @@ jobs:
             # Fallback - show logs
             echo "⚠️ Could not extract port automatically"
             cat bore.log
-            BORE_PORT="UNKNOWN"
+            BORE_PORT="UNKNOWN (check logs)"
           fi
           
           echo ""
           echo "██████████████████████████████████████████████████████████████"
           echo "██                                                          ██"
-          echo "██           ✅ BORE.PUB VPS IS READY                       ██"
+          echo "██           ✅ BORE.PUB SSH IS READY                       ██"
           echo "██                                                          ██"
           echo "██████████████████████████████████████████████████████████████"
           echo ""
@@ -111,25 +83,22 @@ jobs:
           echo ""
           echo "   🌐 Hostname: bore.pub"
           echo "   🔢 Port:     $BORE_PORT"
-          echo "   👤 Username: root"
+          echo "   👤 Username: runner"
           echo "   🔑 Password: 12345678"
           echo ""
           echo "   📋 COPY THESE EXACT VALUES:"
           echo "   ---------------------------------------"
           echo "   Host: bore.pub"
           echo "   Port: $BORE_PORT"
-          echo "   User: root"
+          echo "   User: runner"
           echo "   Pass: 12345678"
           echo "   ---------------------------------------"
           echo ""
           echo "🔗 SSH COMMAND:"
-          echo "   ssh root@bore.pub -p $BORE_PORT"
+          echo "   ssh runner@bore.pub -p $BORE_PORT"
           echo ""
           echo "🔍 TEST CONNECTION:"
-          echo "   sshpass -p '12345678' ssh -o StrictHostKeyChecking=no root@bore.pub -p $BORE_PORT 'echo ✅ Connected'"
-          echo ""
-          echo "🖥️  LOCAL ACCESS (for debugging):"
-          echo "   ssh root@localhost -p 2222"
+          echo "   sshpass -p '12345678' ssh -o StrictHostKeyChecking=no runner@bore.pub -p $BORE_PORT 'echo ✅ Connected'"
           echo ""
           echo "⏱️  SESSION DETAILS:"
           echo "   • Started: $(date)"
@@ -142,7 +111,7 @@ jobs:
           # Save connection details
           echo "$BORE_PORT" > bore-port.txt
           echo "bore.pub" > bore-host.txt
-          echo "root" > bore-user.txt
+          echo "runner" > bore-user.txt
           echo "12345678" > bore-pass.txt
           
           # Test the tunnel
@@ -151,11 +120,11 @@ jobs:
           if sshpass -p '12345678' ssh -o StrictHostKeyChecking=no \
             -o ConnectTimeout=10 \
             -p $BORE_PORT \
-            root@bore.pub "echo '✅ Tunnel is working!'" 2>/dev/null; then
+            runner@bore.pub "echo '✅ Tunnel is working!'" 2>/dev/null; then
             echo "✅ Tunnel test successful!"
           else
             echo "⚠️ Tunnel test failed - but tunnel may still work"
-            echo "   Try connecting manually with: ssh root@bore.pub -p $BORE_PORT"
+            echo "   Try connecting manually with: ssh runner@bore.pub -p $BORE_PORT"
           fi
           
           # Keep tunnel alive for 6 hours
@@ -179,9 +148,13 @@ jobs:
             bore-pass.txt
           retention-days: 30
       
-      - name: Cleanup
+      - name: Session Summary
         if: always()
         run: |
-          docker stop vps 2>/dev/null || true
-          docker rm vps 2>/dev/null || true
-          echo "✅ Cleanup complete"
+          echo ""
+          echo "========================================="
+          echo "✅ SESSION COMPLETE"
+          echo "========================================="
+          echo "Next run in 6 hours"
+          echo "30-day schedule active"
+          echo "========================================="
