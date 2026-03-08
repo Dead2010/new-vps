@@ -1,131 +1,50 @@
-name: 30-Day Bore Tunnel (VPS Persistent)
+name: Bore VPS
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
-  persistent-tunnel:
-    # 👇 IMPORTANT: use your self‑hosted runner label
-    runs-on: self-hosted
-    timeout-minutes: 43200  # 30 days
+  vps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Update system
+        run: sudo apt-get update
 
-      - name: Install Rust and Cargo
+      - name: Install SSH server
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          source ~/.cargo/env
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          cargo --version
-
-      - name: Install bore-cli
-        run: |
-          source ~/.cargo/env
-          cargo install bore-cli
-          echo "bore-cli installed successfully"
-
-      - name: Install required packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y sshpass net-tools tmux
-
-      - name: Configure SSH for external access
-        run: |
-          echo "🔧 Making SSH listen on all interfaces and enabling password auth..."
-          sudo sed -i 's/^#ListenAddress 0.0.0.0/ListenAddress 0.0.0.0/' /etc/ssh/sshd_config
-          sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl restart ssh
-          sleep 5
-
-      - name: Find SSH Port
-        id: ssh_port
-        run: |
-          PORT=$(grep -E "^Port" /etc/ssh/sshd_config | awk '{print $2}')
-          if [ -z "$PORT" ]; then PORT=22; fi
-          echo "SSH_PORT=$PORT" >> $GITHUB_ENV
-          echo "port=$PORT" >> $GITHUB_OUTPUT
-          echo "✅ SSH on port $PORT"
-
-      - name: Set password for runner user
-        run: |
+          sudo apt-get install -y openssh-server curl
+          sudo mkdir -p /var/run/sshd
           echo "runner:12345678" | sudo chpasswd
-          echo "✅ Password set"
 
-      - name: Open firewall (if any)
+      - name: Enable SSH password login
         run: |
-          if command -v ufw &> /dev/null; then
-            sudo ufw allow ${{ env.SSH_PORT }}/tcp
-            sudo ufw reload
-          fi
-          if command -v iptables &> /dev/null; then
-            sudo iptables -C INPUT -p tcp --dport ${{ env.SSH_PORT }} -j ACCEPT 2>/dev/null || \
-            sudo iptables -I INPUT -p tcp --dport ${{ env.SSH_PORT }} -j ACCEPT
-          fi
-          echo "✅ Firewall rules updated"
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+          sudo service ssh restart
 
-      - name: Start persistent bore tunnel inside tmux
-        id: bore_tunnel
+      - name: Download Bore
         run: |
-          source ~/.cargo/env
-          # Kill any previous tmux session with same name
-          tmux kill-session -t bore_tunnel 2>/dev/null || true
-          # Create a new detached tmux session that runs the bore tunnel
-          tmux new-session -d -s bore_tunnel "bash -c '
-            echo \"🚀 Bore tunnel started inside tmux\"
-            while true; do
-              bore local ${{ env.SSH_PORT }} --to bore.pub
-              echo \"Bore exited – restarting in 10 seconds...\"
-              sleep 10
-            done
-          '"
-          # Give it a moment to start and capture the public port
-          sleep 15
-          # Extract the public port from tmux output
-          tmux capture-pane -t bore_tunnel -pS -50 > /tmp/bore_output.txt
-          BORE_PORT=$(grep -oP 'listening at bore.pub:\K\d+' /tmp/bore_output.txt | head -1)
-          if [ -n "$BORE_PORT" ]; then
-            echo "BORE_PORT=$BORE_PORT" >> $GITHUB_ENV
-            echo "bore_port=$BORE_PORT" >> $GITHUB_OUTPUT
-            echo "✅ Bore tunnel established on port $BORE_PORT"
-          else
-            echo "⚠️ Could not detect public port – check tmux session manually:"
-            tmux capture-pane -t bore_tunnel -pS -50
-          fi
+          curl -L https://github.com/ekzhang/bore/releases/latest/download/bore-x86_64-unknown-linux-musl -o bore
+          chmod +x bore
 
-      - name: Display connection info
+      - name: Start Bore tunnel
         run: |
-          echo "═══════════════════════════════════════════"
-          echo "🔌 PERSISTENT TUNNEL – 30 DAYS"
-          echo "═══════════════════════════════════════════"
-          echo "Connect with: ssh -p ${{ env.BORE_PORT }} runner@bore.pub"
-          echo "Password: 12345678"
-          echo "─────────────────────────────"
-          echo "Local SSH port on VPS: ${{ env.SSH_PORT }}"
-          echo "─────────────────────────────"
-          echo "The tunnel is running inside a tmux session named 'bore_tunnel'."
-          echo "To reattach (if you SSH into the VPS): tmux attach -t bore_tunnel"
-          echo "═══════════════════════════════════════════"
+          ./bore local 22 --to bore.pub > bore.log 2>&1 &
+          sleep 8
+          cat bore.log
 
-      - name: Keep runner alive and monitor (optional)
+      - name: SSH Login Info
         run: |
-          echo "🔄 Runner will now stay alive for 30 days, but the bore tunnel is already safe in tmux."
-          echo "Even if this job stops, the tunnel will continue because it's detached."
-          # Simple heartbeat to keep the runner session alive (prevents idle disconnect)
-          DAY=0
-          while [ $DAY -lt 30 ]; do
-            for HOUR in {0..23}; do
-              for MIN in {0..59}; do
-                echo "[$(date)] Runner alive – Day $DAY, $HOUR:$MIN – Tunnel bore.pub:${{ env.BORE_PORT }}"
-                sleep 60
-              done
-            done
-            DAY=$((DAY + 1))
-          done
-          echo "✅ 30 days completed."
+          echo "================================"
+          echo "SSH HOST: bore.pub"
+          echo "USERNAME: runner"
+          echo "PASSWORD: 12345678"
+          echo "PORT: check above line showing bore.pub:PORT"
+          echo "Example:"
+          echo "ssh runner@bore.pub -p PORT"
+          echo "================================"
+
+      - name: Keep VPS running
+        run: sleep 21600
