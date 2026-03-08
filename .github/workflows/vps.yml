@@ -1,41 +1,75 @@
-
-name: Bore SSH VPS
+name: Bore Tunnel Setup
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
-  vps:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
+  setup-bore-tunnel:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    steps:
+      - name: Install Rust and Cargo
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source ~/.cargo/env
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          cargo --version
 
-    - name: Install SSH
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y openssh-server curl
-        sudo mkdir -p /var/run/sshd
+      - name: Install bore-cli
+        run: |
+          source ~/.cargo/env
+          cargo install bore-cli
+          echo "bore-cli installed successfully"
 
-    - name: Set password
-      run: |
-        echo "runner:12345678" | sudo chpasswd
+      - name: Start SSH Service
+        run: |
+          echo "🔧 Starting SSH service..."
+          sudo systemctl start ssh
+          sudo systemctl enable ssh
+          sudo systemctl status ssh
+          echo "✅ SSH service started"
 
-    - name: Enable password login
-      run: |
-        sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-        sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-        sudo service ssh restart
+      - name: Find SSH Port
+        run: |
+          echo "🔍 Finding SSH port..."
+          
+          # Method 1: Check config file
+          SSH_PORT=$(grep -E "^Port" /etc/ssh/sshd_config | awk '{print $2}')
+          
+          # Method 2: If not in config, check netstat
+          if [ -z "$SSH_PORT" ]; then
+            SSH_PORT=$(sudo netstat -tlnp | grep sshd | head -1 | awk '{print $4}' | cut -d: -f2)
+          fi
+          
+          # Method 3: Default to 22
+          if [ -z "$SSH_PORT" ]; then
+            SSH_PORT=22
+          fi
+          
+          echo "✅ SSH is running on port: $SSH_PORT"
+          echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
 
-    - name: Install Bore
-      run: |
-        curl -L https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-x86_64-unknown-linux-musl -o bore
-        chmod +x bore
+      - name: Check SSH Status
+        run: |
+          sudo systemctl status ssh || echo "SSH service status check completed"
+          sudo netstat -tlnp | grep :${{ env.SSH_PORT }} || echo "Port ${{ env.SSH_PORT }} not found in netstat"
 
-    - name: Start tunnel
-      run: |
-        echo "Starting bore tunnel..."
-        ./bore local 22 --to bore.pub
+      - name: Set Password for runner User
+        run: |
+          echo "runner:12345678" | sudo chpasswd
+          echo "✅ Password set for runner user"
 
-    - name: Keep runner alive
-      run: sleep 21600
+      - name: Verify SSH Configuration
+        run: |
+          echo "📋 SSH Configuration:"
+          sudo cat /etc/ssh/sshd_config | grep -E "PermitRootLogin|AllowUsers|Port" || echo "No specific SSH restrictions found"
+          echo ""
+          echo "🔌 Listening ports:"
+          sudo netstat -tlnp | grep :${{ env.SSH_PORT }}
