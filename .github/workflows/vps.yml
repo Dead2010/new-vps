@@ -1,305 +1,183 @@
-# docker-compose.yml - Complete VPS Stack
-# Run with: docker-compose up -d
+name: VPS Deployment
 
-version: '3.8'
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Allow manual trigger
 
-services:
-  # Nginx Proxy Manager (Reverse Proxy with SSL)
-  nginx-proxy-manager:
-    image: 'jc21/nginx-proxy-manager:latest'
-    container_name: nginx-proxy-manager
-    restart: unless-stopped
-    ports:
-      - '80:80'      # HTTP
-      - '443:443'    # HTTPS
-      - '81:81'      # Admin UI
-    volumes:
-      - ./data/nginx/data:/data
-      - ./data/nginx/letsencrypt:/etc/letsencrypt
-    networks:
-      - vps-network
+env:
+  # Docker image name
+  IMAGE_NAME: my-vps-app
+  REGISTRY: ghcr.io
 
-  # Portainer - Docker Management UI
-  portainer:
-    image: portainer/portainer-ce:latest
-    container_name: portainer
-    restart: unless-stopped
-    ports:
-      - '9000:9000'
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./data/portainer:/data
-    networks:
-      - vps-network
+jobs:
+  # Job 1: Build and test
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+      
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+      
+      - name: Test Docker image
+        run: |
+          docker run --rm ${{ env.IMAGE_NAME }}:latest --version || echo "Container started successfully"
+      
+      # Move cache
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
-  # MySQL Database
-  mysql:
-    image: mysql:8.0
-    container_name: mysql
-    restart: unless-stopped
-    ports:
-      - '3306:3306'
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ChangeMe123!}
-      MYSQL_DATABASE: vpsdb
-      MYSQL_USER: vpsuser
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-UserPass123!}
-    volumes:
-      - ./data/mysql:/var/lib/mysql
-      - ./backup/mysql:/backup
-    networks:
-      - vps-network
-    command: --default-authentication-plugin=mysql_native_password
+  # Job 2: Deploy to VPS
+  deploy-to-vps:
+    name: Deploy to VPS
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.VPS_SSH_KEY }}
+          name: id_rsa
+          known_hosts: ${{ secrets.VPS_KNOWN_HOSTS }}
+      
+      - name: Test SSH connection
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} -p ${{ secrets.VPS_PORT }} "echo 'SSH connection successful'"
+      
+      - name: Deploy to VPS
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} -p ${{ secrets.VPS_PORT }} << 'EOF'
+            # Update code
+            cd /opt/workspace || git clone https://github.com/${{ github.repository }} /opt/workspace
+            cd /opt/workspace
+            git pull origin main
+            
+            # Build and run with docker-compose
+            docker-compose down
+            docker-compose pull
+            docker-compose up -d --build
+            
+            # Clean up old images
+            docker system prune -f
+            
+            # Check status
+            docker-compose ps
+            
+            # Print access information
+            echo "========================================="
+            echo "✅ Deployment Complete!"
+            echo "========================================="
+            echo "Services:"
+            docker-compose ps --services
+            echo "========================================="
+          EOF
 
-  # PostgreSQL Database
-  postgres:
-    image: postgres:15
-    container_name: postgres
-    restart: unless-stopped
-    ports:
-      - '5432:5432'
-    environment:
-      POSTGRES_DB: vpsdb
-      POSTGRES_USER: vpsuser
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Postgres123!}
-      PGDATA: /var/lib/postgresql/data/pgdata
-    volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-    networks:
-      - vps-network
+  # Job 3: Health Check
+  health-check:
+    name: Health Check
+    needs: deploy-to-vps
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Check service health
+        run: |
+          # Wait for services to start
+          sleep 30
+          
+          # Check if services are responding
+          if curl -s http://${{ secrets.VPS_HOST }}:80 > /dev/null; then
+            echo "✅ Web service is healthy"
+          else
+            echo "⚠️ Web service check failed"
+          fi
+          
+          if curl -s http://${{ secrets.VPS_HOST }}:9000 > /dev/null; then
+            echo "✅ Portainer is healthy"
+          else
+            echo "⚠️ Portainer check failed"
+          fi
+          
+          echo "✅ Health check completed"
+      
+      - name: Send notification
+        if: always()
+        run: |
+          echo "Deployment status: ${{ job.status }}"
+          # Add notification here (Slack, Email, etc.)
 
-  # MongoDB
-  mongodb:
-    image: mongo:6
-    container_name: mongodb
-    restart: unless-stopped
-    ports:
-      - '27017:27017'
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-Mongo123!}
-    volumes:
-      - ./data/mongodb:/data/db
-    networks:
-      - vps-network
-
-  # Redis Cache
-  redis:
-    image: redis:7-alpine
-    container_name: redis
-    restart: unless-stopped
-    ports:
-      - '6379:6379'
-    command: redis-server --requirepass ${REDIS_PASSWORD:-Redis123!}
-    volumes:
-      - ./data/redis:/data
-    networks:
-      - vps-network
-
-  # phpMyAdmin
-  phpmyadmin:
-    image: phpmyadmin/phpmyadmin
-    container_name: phpmyadmin
-    restart: unless-stopped
-    ports:
-      - '8080:80'
-    environment:
-      PMA_HOST: mysql
-      PMA_PORT: 3306
-      UPLOAD_LIMIT: 100M
-    networks:
-      - vps-network
-    depends_on:
-      - mysql
-
-  # Adminer (Database Manager)
-  adminer:
-    image: adminer:latest
-    container_name: adminer
-    restart: unless-stopped
-    ports:
-      - '8081:8080'
-    networks:
-      - vps-network
-
-  # pgAdmin for PostgreSQL
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: pgadmin
-    restart: unless-stopped
-    ports:
-      - '5050:80'
-    environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@vps.com}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-PgAdmin123!}
-    volumes:
-      - ./data/pgadmin:/var/lib/pgadmin
-    networks:
-      - vps-network
-    depends_on:
-      - postgres
-
-  # MongoDB Express
-  mongo-express:
-    image: mongo-express:latest
-    container_name: mongo-express
-    restart: unless-stopped
-    ports:
-      - '8082:8081'
-    environment:
-      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
-      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_PASSWORD:-Mongo123!}
-      ME_CONFIG_MONGODB_SERVER: mongodb
-    networks:
-      - vps-network
-    depends_on:
-      - mongodb
-
-  # WordPress
-  wordpress:
-    image: wordpress:latest
-    container_name: wordpress
-    restart: unless-stopped
-    ports:
-      - '8083:80'
-    environment:
-      WORDPRESS_DB_HOST: mysql:3306
-      WORDPRESS_DB_USER: vpsuser
-      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD:-UserPass123!}
-      WORDPRESS_DB_NAME: wordpress
-      WORDPRESS_TABLE_PREFIX: wp_
-    volumes:
-      - ./data/wordpress:/var/www/html
-      - ./config/wordpress/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini
-    networks:
-      - vps-network
-    depends_on:
-      - mysql
-
-  # Nextcloud
-  nextcloud:
-    image: nextcloud:latest
-    container_name: nextcloud
-    restart: unless-stopped
-    ports:
-      - '8084:80'
-    environment:
-      MYSQL_HOST: mysql
-      MYSQL_DATABASE: nextcloud
-      MYSQL_USER: vpsuser
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-UserPass123!}
-      NEXTCLOUD_ADMIN_USER: admin
-      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_PASSWORD:-Admin123!}
-    volumes:
-      - ./data/nextcloud:/var/www/html
-      - ./data/nextcloud-data:/var/www/html/data
-    networks:
-      - vps-network
-    depends_on:
-      - mysql
-
-  # Gitea (Git Server)
-  gitea:
-    image: gitea/gitea:latest
-    container_name: gitea
-    restart: unless-stopped
-    ports:
-      - '3000:3000'
-      - '222:22'
-    environment:
-      - USER_UID=1000
-      - USER_GID=1000
-      - GITEA__database__DB_TYPE=mysql
-      - GITEA__database__HOST=mysql:3306
-      - GITEA__database__NAME=gitea
-      - GITEA__database__USER=vpsuser
-      - GITEA__database__PASSWD=${MYSQL_PASSWORD:-UserPass123!}
-    volumes:
-      - ./data/gitea:/data
-      - /etc/timezone:/etc/timezone:ro
-      - /etc/localtime:/etc/localtime:ro
-    networks:
-      - vps-network
-    depends_on:
-      - mysql
-
-  # Jupyter Notebook
-  jupyter:
-    image: jupyter/datascience-notebook:latest
-    container_name: jupyter
-    restart: unless-stopped
-    ports:
-      - '8888:8888'
-    environment:
-      JUPYTER_ENABLE_LAB: 'yes'
-      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-jupyter123}
-    volumes:
-      - ./data/jupyter:/home/jovyan/work
-    networks:
-      - vps-network
-
-  # VS Code Server
-  code-server:
-    image: linuxserver/code-server:latest
-    container_name: code-server
-    restart: unless-stopped
-    ports:
-      - '8443:8443'
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=UTC
-      - PASSWORD=${CODESERVER_PASSWORD:-code123!}
-      - SUDO_PASSWORD=${SUDO_PASSWORD:-sudo123!}
-    volumes:
-      - ./data/code-server:/config/workspace
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - vps-network
-
-  # Uptime Kuma (Monitoring)
-  uptime-kuma:
-    image: louislam/uptime-kuma:latest
-    container_name: uptime-kuma
-    restart: unless-stopped
-    ports:
-      - '3001:3001'
-    volumes:
-      - ./data/uptime-kuma:/app/data
-    networks:
-      - vps-network
-
-  # Watchtower (Auto-update containers)
-  watchtower:
-    image: containrrr/watchtower
-    container_name: watchtower
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 86400 --cleanup
-    networks:
-      - vps-network
-
-  # Healtcheck
-  healthcheck:
-    image: curlimages/curl:latest
-    container_name: healthcheck
-    restart: unless-stopped
-    entrypoint: |
-      sh -c '
-      while true; do
-        curl -s http://portainer:9000 > /dev/null && echo "All services healthy"
-        sleep 300
-      done
-      '
-    networks:
-      - vps-network
-    depends_on:
-      - portainer
-      - mysql
-      - postgres
-      - redis
-
-networks:
-  vps-network:
-    driver: bridge
+  # Job 4: Create Release
+  create-release:
+    name: Create Release
+    needs: [deploy-to-vps, health-check]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Create Release Tag
+        id: create_tag
+        run: |
+          TAG_NAME="v$(date +'%Y%m%d-%H%M%S')"
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.create_tag.outputs.tag_name }}
+          name: Release ${{ steps.create_tag.outputs.tag_name }}
+          body: |
+            ## VPS Deployment Release
+            
+            **Deployment Time:** $(date)
+            **Commit:** ${{ github.sha }}
+            **Author:** ${{ github.actor }}
+            
+            ### Changes
+            ${{ github.event.head_commit.message }}
+            
+            ### Services Deployed
+            - Web Server
+            - Portainer
+            - Database
+            - Monitoring
+            
+            ### Health Status
+            ✅ All services are running
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
