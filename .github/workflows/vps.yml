@@ -3,62 +3,12 @@ name: VPS Deployment
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:  # Allow manual trigger
-
-env:
-  # Docker image name
-  IMAGE_NAME: my-vps-app
-  REGISTRY: ghcr.io
+  workflow_dispatch:
 
 jobs:
-  # Job 1: Build and test
-  build-and-test:
-    name: Build and Test
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-      
-      - name: Build Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          load: true
-          tags: ${{ env.IMAGE_NAME }}:latest
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new
-      
-      - name: Test Docker image
-        run: |
-          docker run --rm ${{ env.IMAGE_NAME }}:latest --version || echo "Container started successfully"
-      
-      # Move cache
-      - name: Move cache
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
-
-  # Job 2: Deploy to VPS
   deploy-to-vps:
     name: Deploy to VPS
-    needs: build-and-test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     
     steps:
       - name: Checkout code
@@ -68,7 +18,6 @@ jobs:
         uses: shimataro/ssh-key-action@v2
         with:
           key: ${{ secrets.VPS_SSH_KEY }}
-          name: id_rsa
           known_hosts: ${{ secrets.VPS_KNOWN_HOSTS }}
       
       - name: Test SSH connection
@@ -78,106 +27,79 @@ jobs:
       - name: Deploy to VPS
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} -p ${{ secrets.VPS_PORT }} << 'EOF'
-            # Update code
-            cd /opt/workspace || git clone https://github.com/${{ github.repository }} /opt/workspace
-            cd /opt/workspace
-            git pull origin main
+            # Create workspace if not exists
+            mkdir -p /opt/vps-app
+            cd /opt/vps-app
             
-            # Build and run with docker-compose
-            docker-compose down
+            # Copy files from GitHub
+            echo "Downloading files from GitHub..."
+            
+            # Download files using curl
+            curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                 -L https://api.github.com/repos/${{ github.repository }}/tarball/main \
+                 -o repo.tar.gz
+            
+            # Extract
+            tar -xzf repo.tar.gz --strip-components=1
+            rm repo.tar.gz
+            
+            # Create necessary directories
+            mkdir -p uploads logs backup
+            
+            # Create .env file if not exists
+            if [ ! -f .env ]; then
+              cat > .env << ENVEOF
+      DB_NAME=myapp
+      DB_USER=appuser
+      DB_PASSWORD=SecurePassword123!
+      MYSQL_ROOT_PASSWORD=RootSecurePassword456!
+      REDIS_PASSWORD=RedisSecure321!
+      GRAFANA_PASSWORD=admin
+      PGADMIN_PASSWORD=PgAdminSecure654!
+      ENVEOF
+            fi
+            
+            # Pull latest images
             docker-compose pull
+            
+            # Stop and remove old containers
+            docker-compose down
+            
+            # Start new containers
             docker-compose up -d --build
             
-            # Clean up old images
-            docker system prune -f
+            # Wait for services to start
+            echo "Waiting for services to start..."
+            sleep 20
             
             # Check status
             docker-compose ps
             
-            # Print access information
+            # Clean up old images
+            docker system prune -f
+            
+            # Show access information
+            IP=$(curl -s ifconfig.me)
             echo "========================================="
-            echo "✅ Deployment Complete!"
+            echo "✅ DEPLOYMENT COMPLETE!"
             echo "========================================="
-            echo "Services:"
+            echo "📡 Server IP: $IP"
+            echo ""
+            echo "🌐 Web Services:"
+            echo "   • Web App: http://$IP"
+            echo "   • Portainer: http://$IP:9000"
+            echo "   • phpMyAdmin: http://$IP:8080"
+            echo "   • Grafana: http://$IP:3000"
+            echo "   • Uptime Kuma: http://$IP:3001"
+            echo ""
+            echo "📊 Service Status:"
             docker-compose ps --services
             echo "========================================="
           EOF
-
-  # Job 3: Health Check
-  health-check:
-    name: Health Check
-    needs: deploy-to-vps
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-      - name: Check service health
+      
+      - name: Health Check
         run: |
-          # Wait for services to start
           sleep 30
-          
-          # Check if services are responding
-          if curl -s http://${{ secrets.VPS_HOST }}:80 > /dev/null; then
-            echo "✅ Web service is healthy"
-          else
-            echo "⚠️ Web service check failed"
-          fi
-          
-          if curl -s http://${{ secrets.VPS_HOST }}:9000 > /dev/null; then
-            echo "✅ Portainer is healthy"
-          else
-            echo "⚠️ Portainer check failed"
-          fi
-          
-          echo "✅ Health check completed"
-      
-      - name: Send notification
-        if: always()
-        run: |
-          echo "Deployment status: ${{ job.status }}"
-          # Add notification here (Slack, Email, etc.)
-
-  # Job 4: Create Release
-  create-release:
-    name: Create Release
-    needs: [deploy-to-vps, health-check]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Create Release Tag
-        id: create_tag
-        run: |
-          TAG_NAME="v$(date +'%Y%m%d-%H%M%S')"
-          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-          
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.create_tag.outputs.tag_name }}
-          name: Release ${{ steps.create_tag.outputs.tag_name }}
-          body: |
-            ## VPS Deployment Release
-            
-            **Deployment Time:** $(date)
-            **Commit:** ${{ github.sha }}
-            **Author:** ${{ github.actor }}
-            
-            ### Changes
-            ${{ github.event.head_commit.message }}
-            
-            ### Services Deployed
-            - Web Server
-            - Portainer
-            - Database
-            - Monitoring
-            
-            ### Health Status
-            ✅ All services are running
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "Checking service health..."
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} -p ${{ secrets.VPS_PORT }} "curl -s http://localhost/health || echo 'Health check failed'"
+          echo "✅ Deployment verification complete"
