@@ -1,105 +1,589 @@
-name: VPS Deployment
+version: '3.8'
 
-on:
-  push:
-    branches: [ main, master ]
-  workflow_dispatch:
+name: permanent-vps
 
-jobs:
-  deploy-to-vps:
-    name: Deploy to VPS
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Install SSH key
-        uses: shimataro/ssh-key-action@v2
-        with:
-          key: ${{ secrets.VPS_SSH_KEY }}
-          known_hosts: ${{ secrets.VPS_KNOWN_HOSTS }}
-      
-      - name: Test SSH connection
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} -p ${{ secrets.VPS_PORT }} "echo 'SSH connection successful'"
-      
-      - name: Deploy to VPS
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} -p ${{ secrets.VPS_PORT }} << 'EOF'
-            # Create workspace if not exists
-            mkdir -p /opt/vps-app
-            cd /opt/vps-app
-            
-            # Copy files from GitHub
-            echo "Downloading files from GitHub..."
-            
-            # Download files using curl
-            curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                 -L https://api.github.com/repos/${{ github.repository }}/tarball/main \
-                 -o repo.tar.gz
-            
-            # Extract
-            tar -xzf repo.tar.gz --strip-components=1
-            rm repo.tar.gz
-            
-            # Create necessary directories
-            mkdir -p uploads logs backup
-            
-            # Create .env file if not exists
-            if [ ! -f .env ]; then
-              cat > .env << ENVEOF
-      DB_NAME=myapp
-      DB_USER=appuser
-      DB_PASSWORD=SecurePassword123!
-      MYSQL_ROOT_PASSWORD=RootSecurePassword456!
-      REDIS_PASSWORD=RedisSecure321!
-      GRAFANA_PASSWORD=admin
-      PGADMIN_PASSWORD=PgAdminSecure654!
-      ENVEOF
-            fi
-            
-            # Pull latest images
-            docker-compose pull
-            
-            # Stop and remove old containers
-            docker-compose down
-            
-            # Start new containers
-            docker-compose up -d --build
-            
-            # Wait for services to start
-            echo "Waiting for services to start..."
-            sleep 20
-            
-            # Check status
-            docker-compose ps
-            
-            # Clean up old images
-            docker system prune -f
-            
-            # Show access information
-            IP=$(curl -s ifconfig.me)
-            echo "========================================="
-            echo "✅ DEPLOYMENT COMPLETE!"
-            echo "========================================="
-            echo "📡 Server IP: $IP"
-            echo ""
-            echo "🌐 Web Services:"
-            echo "   • Web App: http://$IP"
-            echo "   • Portainer: http://$IP:9000"
-            echo "   • phpMyAdmin: http://$IP:8080"
-            echo "   • Grafana: http://$IP:3000"
-            echo "   • Uptime Kuma: http://$IP:3001"
-            echo ""
-            echo "📊 Service Status:"
-            docker-compose ps --services
-            echo "========================================="
-          EOF
-      
-      - name: Health Check
-        run: |
-          sleep 30
-          echo "Checking service health..."
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} -p ${{ secrets.VPS_PORT }} "curl -s http://localhost/health || echo 'Health check failed'"
-          echo "✅ Deployment verification complete"
+services:
+  # ============================================
+  # WEB SERVER & PROXY
+  # ============================================
+  
+  nginx:
+    image: nginx:alpine
+    container_name: vps-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./www:/var/www/html
+      - ./ssl:/etc/nginx/ssl
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - vps-network
+    depends_on:
+      - php
+      - mysql
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # PHP (for WordPress, Nextcloud, etc.)
+  # ============================================
+  
+  php:
+    image: php:8.2-fpm
+    container_name: vps-php
+    restart: unless-stopped
+    volumes:
+      - ./www:/var/www/html
+      - ./php/php.ini:/usr/local/etc/php/conf.d/php.ini
+    networks:
+      - vps-network
+    depends_on:
+      - mysql
+    healthcheck:
+      test: ["CMD", "php", "-v"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # DATABASES
+  # ============================================
+  
+  mysql:
+    image: mysql:8.0
+    container_name: vps-mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-RootPassword123!}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-vpsdb}
+      MYSQL_USER: ${MYSQL_USER:-vpsuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-UserPassword123!}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./backup/mysql:/backup
+      - ./mysql/my.cnf:/etc/mysql/conf.d/my.cnf
+    networks:
+      - vps-network
+    command: 
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-RootPassword123!}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: vps-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vpsdb}
+      POSTGRES_USER: ${POSTGRES_USER:-vpsuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Postgres123!}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./backup/postgres:/backup
+    networks:
+      - vps-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vpsuser}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  mongodb:
+    image: mongo:6
+    container_name: vps-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-Mongo123!}
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - vps-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ============================================
+  # CACHE & MESSAGE QUEUE
+  # ============================================
+  
+  redis:
+    image: redis:7-alpine
+    container_name: vps-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-Redis123!}
+    volumes:
+      - redis-data:/data
+    networks:
+      - vps-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  memcached:
+    image: memcached:alpine
+    container_name: vps-memcached
+    restart: unless-stopped
+    ports:
+      - "11211:11211"
+    command: memcached -m 64
+    networks:
+      - vps-network
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: vps-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-Rabbit123!}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - vps-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ============================================
+  # MANAGEMENT TOOLS
+  # ============================================
+  
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: vps-portainer
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer-data:/data
+    networks:
+      - vps-network
+    command: --http-enabled
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:9000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: vps-phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      UPLOAD_LIMIT: 100M
+      PMA_USER: ${PMA_USER:-root}
+      PMA_PASSWORD: ${PMA_PASSWORD:-RootPassword123!}
+    networks:
+      - vps-network
+    depends_on:
+      - mysql
+
+  adminer:
+    image: adminer:latest
+    container_name: vps-adminer
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    networks:
+      - vps-network
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: vps-pgadmin
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@vps.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-PgAdmin123!}
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    networks:
+      - vps-network
+    depends_on:
+      - postgres
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: vps-mongo-express
+    restart: unless-stopped
+    ports:
+      - "8082:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_USER:-admin}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_PASSWORD:-Mongo123!}
+      ME_CONFIG_MONGODB_SERVER: mongodb
+    networks:
+      - vps-network
+    depends_on:
+      - mongodb
+
+  # ============================================
+  # APPLICATIONS
+  # ============================================
+  
+  wordpress:
+    image: wordpress:latest
+    container_name: vps-wordpress
+    restart: unless-stopped
+    ports:
+      - "8083:80"
+    environment:
+      WORDPRESS_DB_HOST: mysql:3306
+      WORDPRESS_DB_USER: ${MYSQL_USER:-vpsuser}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD:-UserPassword123!}
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_TABLE_PREFIX: wp_
+      WORDPRESS_DEBUG: 0
+    volumes:
+      - ./www/wordpress:/var/www/html
+    networks:
+      - vps-network
+    depends_on:
+      - mysql
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nextcloud:
+    image: nextcloud:latest
+    container_name: vps-nextcloud
+    restart: unless-stopped
+    ports:
+      - "8084:80"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: ${MYSQL_USER:-vpsuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-UserPassword123!}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN:-admin}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_PASSWORD:-Nextcloud123!}
+      NEXTCLOUD_TRUSTED_DOMAINS: ${DOMAIN:-localhost}
+    volumes:
+      - nextcloud-data:/var/www/html
+      - ./www/nextcloud-data:/var/www/html/data
+    networks:
+      - vps-network
+    depends_on:
+      - mysql
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/status.php"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  gitea:
+    image: gitea/gitea:latest
+    container_name: vps-gitea
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      - "222:22"
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__database__DB_TYPE=mysql
+      - GITEA__database__HOST=mysql:3306
+      - GITEA__database__NAME=gitea
+      - GITEA__database__USER=${MYSQL_USER:-vpsuser}
+      - GITEA__database__PASSWD=${MYSQL_PASSWORD:-UserPassword123!}
+      - GITEA__server__DOMAIN=${DOMAIN:-localhost}
+      - GITEA__server__ROOT_URL=http://${DOMAIN:-localhost}:3000
+    volumes:
+      - gitea-data:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - vps-network
+    depends_on:
+      - mysql
+
+  # ============================================
+  # DEVELOPMENT TOOLS
+  # ============================================
+  
+  jupyter:
+    image: jupyter/datascience-notebook:latest
+    container_name: vps-jupyter
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      JUPYTER_ENABLE_LAB: 'yes'
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-jupyter123}
+    volumes:
+      - ./workspace/jupyter:/home/jovyan/work
+    networks:
+      - vps-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  code-server:
+    image: linuxserver/code-server:latest
+    container_name: vps-code-server
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - PASSWORD=${CODESERVER_PASSWORD:-code123!}
+      - SUDO_PASSWORD=${SUDO_PASSWORD:-sudo123!}
+    volumes:
+      - ./workspace/code-server:/config/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - vps-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8443"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # MONITORING
+  # ============================================
+  
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: vps-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - vps-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: vps-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    networks:
+      - vps-network
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: vps-node-exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - vps-network
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: vps-cadvisor
+    restart: unless-stopped
+    ports:
+      - "8085:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+    networks:
+      - vps-network
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:latest
+    container_name: vps-uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - uptime-kuma-data:/app/data
+    networks:
+      - vps-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # BACKUP & MAINTENANCE
+  # ============================================
+  
+  watchtower:
+    image: containrrr/watchtower
+    container_name: vps-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 86400 --cleanup
+    environment:
+      - WATCHTOWER_NOTIFICATIONS=email
+      - WATCHTOWER_NOTIFICATION_EMAIL_FROM=${WATCHTOWER_EMAIL_FROM}
+      - WATCHTOWER_NOTIFICATION_EMAIL_TO=${WATCHTOWER_EMAIL_TO}
+      - WATCHTOWER_NOTIFICATION_EMAIL_SERVER=${WATCHTOWER_EMAIL_SERVER:-smtp.gmail.com}
+      - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_PORT=587
+      - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_USER=${WATCHTOWER_EMAIL_USER}
+      - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_PASSWORD=${WATCHTOWER_EMAIL_PASSWORD}
+    networks:
+      - vps-network
+
+  duplicati:
+    image: linuxserver/duplicati:latest
+    container_name: vps-duplicati
+    restart: unless-stopped
+    ports:
+      - "8200:8200"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+    volumes:
+      - ./backup/duplicati/config:/config
+      - ./backup/duplicati/backups:/backups
+      - ./:/source:ro
+    networks:
+      - vps-network
+
+  # ============================================
+  # NETWORK SERVICES
+  # ============================================
+  
+  nginx-proxy-manager:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: vps-nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "81:81"
+    environment:
+      DB_MYSQL_HOST: mysql
+      DB_MYSQL_PORT: 3306
+      DB_MYSQL_USER: ${MYSQL_USER:-vpsuser}
+      DB_MYSQL_PASSWORD: ${MYSQL_PASSWORD:-UserPassword123!}
+      DB_MYSQL_NAME: nginx_proxy
+    volumes:
+      - nginx-proxy-data:/data
+      - nginx-proxy-letsencrypt:/etc/letsencrypt
+    networks:
+      - vps-network
+    depends_on:
+      - mysql
+
+  # ============================================
+  # VOLUMES
+  # ============================================
+  
+volumes:
+  mysql-data:
+    driver: local
+  postgres-data:
+    driver: local
+  mongo-data:
+    driver: local
+  redis-data:
+    driver: local
+  rabbitmq-data:
+    driver: local
+  portainer-data:
+    driver: local
+  pgadmin-data:
+    driver: local
+  gitea-data:
+    driver: local
+  nextcloud-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  uptime-kuma-data:
+    driver: local
+  nginx-proxy-data:
+    driver: local
+  nginx-proxy-letsencrypt:
+    driver: local
+
+# ============================================
+# NETWORKS
+# ============================================
+  
+networks:
+  vps-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
