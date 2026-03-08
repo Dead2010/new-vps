@@ -2,13 +2,13 @@ name: Termius 30-Day Persistent Access
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Runs every 6 hours
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 jobs:
   termius-tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours
+    timeout-minutes: 360
     
     steps:
       - name: Install Required Tools
@@ -65,19 +65,18 @@ jobs:
           }
 
           function saveConnection(host, port, method) {
-              const content = 
-  `=========================================
-  ✅ TERMIUS CONNECTION DETAILS
-  =========================================
-  📅 Updated: ${new Date().toISOString()}
-  🌐 Host: ${host}
-  🔢 Port: ${port}
-  👤 User: runner
-  🔑 Pass: 12345678
-  🔗 Method: ${method}
-  =========================================
-  📱 Add to Termius with these exact values!
-  =========================================`;
+              const content = `=========================================
+✅ TERMIUS CONNECTION DETAILS
+=========================================
+📅 Updated: ${new Date().toISOString()}
+🌐 Host: ${host}
+🔢 Port: ${port}
+👤 User: runner
+🔑 Pass: 12345678
+🔗 Method: ${method}
+=========================================
+📱 Add to Termius with these exact values!
+=========================================`;
               
               fs.writeFileSync(HOST_FILE, content);
               console.log(content);
