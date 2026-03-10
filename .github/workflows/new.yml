@@ -1,71 +1,65 @@
-name: Tmate Terminal
+name: Tmate Terminal with Clear Output
 
-on:
-  workflow_dispatch:  # Manual trigger only
+on: workflow_dispatch
 
 jobs:
   terminal:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
+    timeout-minutes: 360
     
     steps:
       - name: Install tmate
         run: |
           sudo apt-get update
           sudo apt-get install -y tmate
-          echo "✅ tmate installed"
-      
-      - name: Start tmate session
+          
+      - name: Generate SSH key
+        run: |
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
+          
+      - name: Start tmate and show connection
         run: |
           # Start tmate
           tmate -S /tmp/tmate.sock new-session -d
           
-          # Wait for session to be ready
-          echo "Waiting for tmate session to initialize..."
-          for i in {1..30}; do
-            if tmate -S /tmp/tmate.sock wait tmate-ready 2>/dev/null; then
+          # Wait for connection
+          echo "Waiting for tmate to connect..."
+          while true; do
+            sleep 2
+            SSH_CMD=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null)
+            if [ -n "$SSH_CMD" ]; then
               break
             fi
-            sleep 2
             echo -n "."
           done
-          echo ""
           
-          # Get connection string
+          # Get connection info
           SSH_CMD=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+          WEB_URL=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
           
-          # Display connection info
+          # Display prominently
           echo "==========================================="
-          echo "🔴 TMATE TERMINAL READY"
+          echo "    TMATE CONNECTION DETAILS"
           echo "==========================================="
           echo ""
-          echo "📱 COPY THIS SSH COMMAND:"
+          echo "📱 TERMIUS SSH COMMAND:"
           echo "$SSH_CMD"
           echo ""
+          echo "🌐 WEB URL (if needed):"
+          echo "$WEB_URL"
+          echo ""
           echo "==========================================="
-          echo "Paste the above command in Termius"
+          echo "Copy the SSH command and paste in Termius"
           echo "Session active for 6 hours"
           echo "==========================================="
           
           # Save to file
-          echo "$SSH_CMD" > tmate-connection.txt
-      
-      - name: Upload connection info
-        uses: actions/upload-artifact@v4
-        with:
-          name: tmate-connection
-          path: tmate-connection.txt
-          retention-days: 1
-      
-      - name: Keep terminal alive
-        run: |
-          echo "✅ Terminal is running"
-          echo "Connection string saved in artifacts"
-          echo ""
-          echo "Press Ctrl+C to stop, or wait 6 hours for auto-stop"
-          echo ""
+          echo "$SSH_CMD" > ~/tmate-connection.txt
+          
           # Keep running
+          echo ""
+          echo "Keeping session alive... (press Ctrl+C to stop)"
           while true; do
-            echo "Terminal active - $(date)"
             sleep 60
+            echo "Session still active - $(date)"
           done
