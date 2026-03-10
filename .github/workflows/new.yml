@@ -1,4 +1,4 @@
-name: Tmate Terminal - Fixed
+name: Tmate Web Terminal
 
 on: workflow_dispatch
 
@@ -14,112 +14,47 @@ jobs:
           sudo apt-get install -y tmate
           echo "✅ tmate installed"
       
-      - name: Clean up old tmate sessions
+      - name: Generate fresh keys
         run: |
-          # Kill any existing tmate processes
-          pkill tmate || true
-          rm -f /tmp/tmate* 2>/dev/null || true
-          echo "✅ Cleaned up old sessions"
-      
-      - name: Generate fresh SSH key
-        run: |
-          # Remove old keys and generate new ones
-          rm -f ~/.ssh/id_* 2>/dev/null || true
+          # Completely clean and regenerate
+          rm -rf ~/.ssh
+          mkdir -p ~/.ssh
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
-          echo "✅ Fresh SSH key generated"
-          
-          # Display public key for verification
-          echo "Public key:"
-          cat ~/.ssh/id_rsa.pub
+          echo "✅ SSH keys regenerated"
       
-      - name: Start tmate with explicit config
+      - name: Start tmate and get web URL
         run: |
-          # Start tmate with verbose output for debugging
-          echo "Starting tmate session..."
-          
-          # Create tmate config
-          cat > ~/.tmate.conf << EOF
-          set -g tmate-server-host sfo2.tmate.io
-          set -g tmate-server-port 22
-          set -g tmate-identity ~/.ssh/id_rsa
-          EOF
-          
-          # Start tmate
+          # Start tmate in background
           tmate -S /tmp/tmate.sock new-session -d
           
           # Wait for connection
-          echo "Waiting for connection (this may take 10-20 seconds)..."
-          MAX_RETRIES=30
-          COUNT=0
-          
-          while [ $COUNT -lt $MAX_RETRIES ]; do
+          echo "Waiting for tmate to connect..."
+          for i in {1..30}; do
             sleep 2
-            tmate -S /tmp/tmate.sock wait tmate-ready 2>/dev/null && break
-            COUNT=$((COUNT + 1))
+            if tmate -S /tmp/tmate.sock wait tmate-ready 2>/dev/null; then
+              break
+            fi
             echo -n "."
           done
           echo ""
           
-          # Get connection strings
-          SSH_CMD=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null)
-          WEB_URL=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}' 2>/dev/null)
+          # Get web URL (easier than SSH)
+          WEB_URL=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
           
-          if [ -n "$SSH_CMD" ]; then
-            echo "==========================================="
-            echo "✅ TMATE SESSION READY"
-            echo "==========================================="
-            echo ""
-            echo "📱 COPY THIS EXACT COMMAND FOR TERMIUS:"
-            echo "$SSH_CMD"
-            echo ""
-            echo "🌐 Web URL (alternative):"
-            echo "$WEB_URL"
-            echo ""
-            echo "==========================================="
-            echo "Session active for 6 hours"
-            echo "Press Ctrl+C to stop manually"
-            echo "==========================================="
-            
-            # Save to file
-            echo "$SSH_CMD" > ~/tmate-connection.txt
-          else
-            echo "❌ Failed to get connection string"
-            echo "Checking tmate status..."
-            tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>&1 || true
-            exit 1
-          fi
-      
-      - name: Keep session alive with monitoring
-        run: |
-          echo "🟢 Terminal session is running"
-          echo "Connection string saved in artifacts"
+          echo "==========================================="
+          echo "✅ TERMINAL READY - USE WEB URL"
+          echo "==========================================="
           echo ""
+          echo "🌐 OPEN THIS IN YOUR BROWSER:"
+          echo "$WEB_URL"
+          echo ""
+          echo "==========================================="
+          echo "No SSH needed - just click the link above"
+          echo "Session active for 6 hours"
+          echo "==========================================="
           
-          # Monitor session
-          HOURS=0
+          # Keep alive
           while true; do
             sleep 60
-            HOURS=$((HOURS + 1))
-            
-            # Check if session is still alive
-            if tmate -S /tmp/tmate.sock has-session 2>/dev/null; then
-              echo "Session active for $HOURS minutes - $(date)"
-              
-              # Refresh connection string every hour (in case it changes)
-              if [ $((HOURS % 60)) -eq 0 ]; then
-                NEW_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null)
-                echo "Current SSH: $NEW_SSH"
-              fi
-            else
-              echo "❌ Session died, restarting..."
-              tmate -S /tmp/tmate.sock new-session -d
-            fi
+            echo "Terminal active - $(date)"
           done
-      
-      - name: Upload connection info
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tmate-connection
-          path: ~/tmate-connection.txt
-          retention-days: 1
