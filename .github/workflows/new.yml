@@ -1,0 +1,101 @@
+name: 30-Day VPS Tmate Access
+
+on:
+  schedule:
+    # Run every 6 hours to maintain continuous access
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Manual trigger
+  push:
+    branches: [ main ]
+
+env:
+  VPS_HOST: ${{ secrets.VPS_HOST }}
+  VPS_USER: ${{ secrets.VPS_USER }}
+  VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+
+jobs:
+  setup-tmate-access:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # 6 hours max
+    
+    steps:
+      - name: Install SSH client and tmate
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client sshpass tmate
+      
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+      
+      - name: Deploy persistent tmate service to VPS
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} '
+            # Install tmate if not present
+            if ! command -v tmate &> /dev/null; then
+              sudo apt-get update && sudo apt-get install -y tmate
+            fi
+            
+            # Create persistent tmate session script
+            cat > ~/persistent-tmate.sh << "INNEREOF"
+            #!/bin/bash
+            while true; do
+              TMATE_SOCK="/tmp/tmate_${RANDOM}.sock"
+              tmate -S $TMATE_SOCK new-session -d
+              tmate -S $TMATE_SOCK wait tmate-ready
+              
+              SSH_CMD=$(tmate -S $TMATE_SOCK display -p "#{tmate_ssh}")
+              echo "[$(date)] New tmate session: $SSH_CMD"
+              echo "$SSH_CMD" >> ~/tmate_connections.log
+              
+              # Keep session alive for 8 hours then rotate
+              sleep 28800
+              tmate -S $TMATE_SOCK kill-session 2>/dev/null
+            done
+            INNEREOF
+            
+            chmod +x ~/persistent-tmate.sh
+            
+            # Create systemd service for auto-start
+            sudo tee /etc/systemd/system/tmate-persistent.service > /dev/null << "SERVICEEOF"
+            [Unit]
+            Description=Persistent Tmate Session
+            After=network.target
+
+            [Service]
+            Type=simple
+            User=$USER
+            ExecStart=/home/$USER/persistent-tmate.sh
+            Restart=always
+            RestartSec=60
+
+            [Install]
+            WantedBy=multi-user.target
+            SERVICEEOF
+
+            sudo systemctl daemon-reload
+            sudo systemctl enable tmate-persistent.service
+            sudo systemctl restart tmate-persistent.service
+            
+            echo "=== CURRENT TMATE CONNECTION INFO ==="
+            tail -n 1 ~/tmate_connections.log
+          '
+      
+      - name: Keep connection alive
+        run: |
+          echo "Tmate service deployed to your VPS"
+          echo "To connect via Termius:"
+          echo "1. SSH into your VPS normally"
+          echo "2. Check ~/tmate_connections.log for current session"
+          echo "3. Use the tmate SSH command in Termius"
+          echo ""
+          echo "This workflow will run every 6 hours for 30 days"
+          
+          # Keep this job running
+          for i in {1..360}; do
+            echo "Session active - $(date)"
+            sleep 60
+          done
