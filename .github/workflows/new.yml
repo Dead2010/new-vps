@@ -1,279 +1,114 @@
-name: 30-Day VPS Tmate Access
+name: Debug VPS Connection
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'  # Run every 6 hours
-  workflow_dispatch:  # Manual trigger
-  push:
-    branches: [ main ]
-
-env:
-  VPS_HOST: ${{ secrets.VPS_HOST }}
-  VPS_USER: ${{ secrets.VPS_USER }}
-  VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+  workflow_dispatch:  # Manual trigger only
 
 jobs:
-  setup-tmate-access:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # Reduced to 30 minutes for faster feedback
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Debug - Check secrets availability
+      - name: Check Environment Variables
         run: |
-          if [ -z "${{ secrets.VPS_HOST }}" ]; then
-            echo "❌ VPS_HOST secret is not set!"
-            exit 1
-          else
-            echo "✅ VPS_HOST is set"
-          fi
+          echo "Checking if secrets are available..."
+          echo "VPS_HOST is ${{ secrets.VPS_HOST != '' && 'SET' || 'NOT SET' }}"
+          echo "VPS_USER is ${{ secrets.VPS_USER != '' && 'SET' || 'NOT SET' }}"
+          echo "VPS_SSH_KEY is ${{ secrets.VPS_SSH_KEY != '' && 'SET' || 'NOT SET' }}"
           
-          if [ -z "${{ secrets.VPS_USER }}" ]; then
-            echo "❌ VPS_USER secret is not set!"
-            exit 1
-          else
-            echo "✅ VPS_USER is set"
-          fi
-          
-          if [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then
-            echo "❌ VPS_SSH_KEY secret is not set!"
-            exit 1
-          else
-            echo "✅ VPS_SSH_KEY is set (length: ${#VPS_SSH_KEY})"
+          # Don't print actual values, just lengths
+          if [ -n "${{ secrets.VPS_SSH_KEY }}" ]; then
+            echo "SSH Key length: ${#VPS_SSH_KEY} characters"
           fi
       
-      - name: Setup SSH
+      - name: Create SSH directory and setup
         run: |
-          # Create SSH directory
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           
-          # Save SSH key
-          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
+          # Try to save SSH key
+          if [ -n "${{ secrets.VPS_SSH_KEY }}" ]; then
+            echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            echo "✅ SSH key saved"
+          else
+            echo "❌ No SSH key provided"
+            exit 1
+          fi
+      
+      - name: Validate SSH Key Format
+        run: |
+          echo "Checking SSH key format..."
           
-          # Test SSH key format
-          echo "Testing SSH key format:"
-          ssh-keygen -l -f ~/.ssh/id_rsa || {
-            echo "❌ Invalid SSH key format"
-            echo "Key should be in PEM format (starts with '-----BEGIN RSA PRIVATE KEY-----')"
+          # Check if file exists
+          if [ ! -f ~/.ssh/id_rsa ]; then
+            echo "❌ SSH key file not found"
+            exit 1
+          fi
+          
+          # Check key format
+          if grep -q "BEGIN" ~/.ssh/id_rsa; then
+            echo "✅ Key contains BEGIN marker"
+          else
+            echo "❌ Key missing BEGIN marker - invalid format"
+            echo "First 50 chars of key:"
+            head -c 50 ~/.ssh/id_rsa
+            echo ""
+            exit 1
+          fi
+          
+          # Try to parse key
+          ssh-keygen -l -f ~/.ssh/id_rsa 2>&1 || {
+            echo "❌ Failed to parse SSH key - invalid format"
+            echo "Make sure it's a valid private key (RSA, ED25519, etc.)"
             exit 1
           }
           
-          # Add host to known hosts
+          echo "✅ SSH key format is valid"
+      
+      - name: Test SSH Connection
+        run: |
+          if [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_USER }}" ]; then
+            echo "❌ Missing VPS_HOST or VPS_USER"
+            exit 1
+          fi
+          
+          echo "Adding host to known_hosts..."
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
           
-          # Test SSH connection
-          echo "Testing SSH connection..."
-          ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "echo '✅ SSH connection successful'" || {
-            echo "❌ SSH connection failed"
-            echo "Check if:"
-            echo "  - VPS is running"
-            echo "  - SSH service is active on port 22"
-            echo "  - Firewall allows connection"
-            echo "  - User '${{ secrets.VPS_USER }}' exists"
-            echo "  - SSH key is added to ~/.ssh/authorized_keys on VPS"
-            exit 1
-          }
-      
-      - name: Install tmate on VPS
-        run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} '
-            set -e  # Exit on error
-            
-            echo "Checking system..."
-            if command -v apt-get &> /dev/null; then
-              echo "📦 Debian/Ubuntu system detected"
-              
-              # Update package list
-              echo "Updating package list..."
-              sudo apt-get update -qq
-              
-              # Install tmate
-              echo "Installing tmate..."
-              sudo apt-get install -y tmate
-              
-            elif command -v yum &> /dev/null; then
-              echo "📦 CentOS/RHEL system detected"
-              
-              # Install epel and tmate
-              sudo yum install -y epel-release
-              sudo yum install -y tmate
-              
-            elif command -v dnf &> /dev/null; then
-              echo "📦 Fedora system detected"
-              sudo dnf install -y tmate
-              
-            elif command -v pacman &> /dev/null; then
-              echo "📦 Arch Linux system detected"
-              sudo pacman -S --noconfirm tmate
-              
-            else
-              echo "❌ Unsupported package manager"
-              echo "Please install tmate manually on your VPS"
-              exit 1
-            fi
-            
-            # Verify installation
-            if command -v tmate &> /dev/null; then
-              echo "✅ tmate installed successfully"
-              tmate -V
-            else
-              echo "❌ tmate installation failed"
-              exit 1
-            fi
-          '
-      
-      - name: Setup persistent tmate service
-        run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} '
-            set -e
-            
-            # Create scripts directory
-            mkdir -p ~/scripts
-            
-            # Create tmate launcher script
-            cat > ~/scripts/tmate-launcher.sh << "EOF"
-            #!/bin/bash
-            
-            LOG_FILE="$HOME/tmate-sessions.log"
-            
-            # Function to create new tmate session
-            create_tmate_session() {
-              # Generate unique socket name
-              SOCKET="/tmp/tmate-$(date +%s).sock"
-              
-              # Start tmate session
-              tmate -S "$SOCKET" new-session -d
-              
-              # Wait for session to be ready
-              echo "Waiting for tmate session to be ready..."
-              for i in {1..30}; do
-                if tmate -S "$SOCKET" wait tmate-ready 2>/dev/null; then
-                  break
-                fi
-                sleep 1
-              done
-              
-              # Get connection strings
-              SSH_CMD=$(tmate -S "$SOCKET" display -p "#{tmate_ssh}" 2>/dev/null)
-              WEB_URL=$(tmate -S "$SOCKET" display -p "#{tmate_web}" 2>/dev/null)
-              
-              if [ -n "$SSH_CMD" ]; then
-                TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
-                echo "[$TIMESTAMP] New tmate session:" >> "$LOG_FILE"
-                echo "SSH: $SSH_CMD" >> "$LOG_FILE"
-                echo "Web: $WEB_URL" >> "$LOG_FILE"
-                echo "----------------------------------------" >> "$LOG_FILE"
-                
-                echo "✅ Tmate session created!"
-                echo "📱 SSH Command: $SSH_CMD"
-                echo "🌐 Web URL: $WEB_URL"
-                
-                # Save current session info to a file for easy access
-                echo "$SSH_CMD" > ~/current-tmate-session
-              else
-                echo "❌ Failed to create tmate session"
-                return 1
-              fi
-            }
-            
-            # Main loop
-            while true; do
-              create_tmate_session
-              echo "Session will rotate in 4 hours..."
-              sleep 14400  # 4 hours
-              
-              # Clean up old sessions
-              pkill -f tmate || true
-              rm -f /tmp/tmate-*.sock 2>/dev/null
-            done
-            EOF
-            
-            chmod +x ~/scripts/tmate-launcher.sh
-            
-            # Create systemd service
-            sudo tee /etc/systemd/system/tmate.service > /dev/null << "SERVICEEOF"
-            [Unit]
-            Description=Tmate Persistent Session
-            After=network.target
-            StartLimitIntervalSec=0
-
-            [Service]
-            Type=simple
-            User=%i
-            ExecStart=/home/%i/scripts/tmate-launcher.sh
-            Restart=always
-            RestartSec=10
-            StandardOutput=journal
-            StandardError=journal
-
-            [Install]
-            WantedBy=multi-user.target
-            SERVICEEOF
-            
-            # Replace %i with actual username
-            sudo sed -i "s/%i/$USER/g" /etc/systemd/system/tmate.service
-            
-            # Enable and start service
-            sudo systemctl daemon-reload
-            sudo systemctl enable tmate.service
-            sudo systemctl restart tmate.service
-            
-            # Wait for service to start
-            sleep 5
-            
-            # Check service status
-            echo "Checking tmate service status:"
-            sudo systemctl status tmate.service --no-pager || true
-            
-            # Show current session info
+          echo "Testing SSH connection with verbose output..."
+          echo "=========================================="
+          ssh -v -o ConnectTimeout=10 \
+                -o StrictHostKeyChecking=no \
+                -o BatchMode=yes \
+                ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "echo 'SSH connection successful'" 2>&1
+          
+          EXIT_CODE=$?
+          echo "=========================================="
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ SSH connection successful!"
+          else
+            echo "❌ SSH connection failed with exit code: $EXIT_CODE"
             echo ""
-            echo "📋 Current tmate session info:"
-            if [ -f ~/current-tmate-session ]; then
-              cat ~/current-tmate-session
-            else
-              echo "Waiting for session to be created..."
-              sleep 10
-              cat ~/current-tmate-session 2>/dev/null || echo "No session yet"
-            fi
-          '
+            echo "Common issues:"
+            echo "1. Wrong host/IP: ${{ secrets.VPS_HOST }}"
+            echo "2. Wrong username: ${{ secrets.VPS_USER }}"
+            echo "3. SSH key not authorized on server"
+            echo "4. Firewall blocking port 22"
+            echo "5. SSH service not running on VPS"
+            exit 1
+          fi
       
-      - name: Display connection information
+      - name: Get System Info (if connection successful)
+        if: success()
         run: |
-          echo "═══════════════════════════════════════════"
-          echo "   TMATE CONNECTION INFORMATION"
-          echo "═══════════════════════════════════════════"
-          
-          # Get current tmate connection
-          SSH_CMD=$(ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "cat ~/current-tmate-session 2>/dev/null || echo 'No active session'")
-          
-          echo ""
-          echo "📱 To connect via Termius:"
-          echo "   Use this SSH command:"
-          echo "   $SSH_CMD"
-          echo ""
-          echo "📝 Alternative access methods:"
-          echo "   1. SSH directly to your VPS:"
-          echo "      ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}"
-          echo "   2. Then check sessions:"
-          echo "      cat ~/tmate-sessions.log"
-          echo "      cat ~/current-tmate-session"
-          echo ""
-          echo "🔄 Session rotates every 4 hours"
-          echo "⏱️  Service auto-restarts on failure"
-          echo "═══════════════════════════════════════════"
-      
-      - name: Keep workflow alive
-        run: |
-          echo "✅ Tmate service deployed successfully!"
-          echo "This workflow will keep running for 30 minutes"
-          echo "The tmate service on your VPS will continue running indefinitely"
-          
-          # Simple countdown
-          for i in {1..30}; do
-            echo "Session monitoring active for $i/30 minutes"
-            sleep 60
-          done
+          echo "Getting system information from VPS..."
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
+            echo 'Hostname: ' \$(hostname)
+            echo 'OS: ' \$(cat /etc/os-release | grep PRETTY_NAME | cut -d'=' -f2 | tr -d '\"')
+            echo 'Kernel: ' \$(uname -r)
+            echo 'Uptime: ' \$(uptime)
+            echo 'Whoami: ' \$(whoami)
+            echo 'Home: ' \$HOME
+            echo 'SSH authorized_keys: ' \$(test -f ~/.ssh/authorized_keys && echo 'Exists' || echo 'Not found')
+          "
