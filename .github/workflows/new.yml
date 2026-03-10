@@ -1,100 +1,71 @@
-name: Debug VPS Connection
+name: Tmate Terminal
 
 on:
   workflow_dispatch:  # Manual trigger only
 
 jobs:
-  diagnose:
+  terminal:
     runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max
     
     steps:
-      - name: Check Secrets Availability
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      - name: Install tmate
         run: |
-          echo "Checking if secrets are available..."
-          echo "VPS_HOST is ${{ secrets.VPS_HOST != '' && 'SET' || 'NOT SET' }}"
-          echo "VPS_USER is ${{ secrets.VPS_USER != '' && 'SET' || 'NOT SET' }}"
-          echo "VPS_SSH_KEY is ${{ secrets.VPS_SSH_KEY != '' && 'SET' || 'NOT SET' }}"
-          
-          # Debug: Show first few characters of host (safely)
-          if [ -n "$VPS_HOST" ]; then
-            echo "VPS_HOST starts with: ${VPS_HOST:0:10}..."
-          fi
-          
-          if [ -n "$VPS_USER" ]; then
-            echo "VPS_USER is: $VPS_USER"
-          fi
-          
-          if [ -n "$VPS_SSH_KEY" ]; then
-            echo "SSH Key length: ${#VPS_SSH_KEY} characters"
-            echo "SSH Key starts with: ${VPS_SSH_KEY:0:30}..."
-          else
-            echo "❌ VPS_SSH_KEY is empty!"
-            echo ""
-            echo "Please check your GitHub Secrets:"
-            echo "1. Go to repository Settings → Secrets and variables → Actions"
-            echo "2. Make sure VPS_SSH_KEY is added"
-            echo "3. The key should include the entire private key including BEGIN/END lines"
-            exit 1
-          fi
+          sudo apt-get update
+          sudo apt-get install -y tmate
+          echo "✅ tmate installed"
       
-      - name: Setup SSH Key
-        env:
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      - name: Start tmate session
         run: |
-          # Create SSH directory
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
+          # Start tmate
+          tmate -S /tmp/tmate.sock new-session -d
           
-          # Save SSH key (now with env variable)
-          echo "$VPS_SSH_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
+          # Wait for session to be ready
+          echo "Waiting for tmate session to initialize..."
+          for i in {1..30}; do
+            if tmate -S /tmp/tmate.sock wait tmate-ready 2>/dev/null; then
+              break
+            fi
+            sleep 2
+            echo -n "."
+          done
+          echo ""
           
-          echo "✅ SSH key saved"
+          # Get connection string
+          SSH_CMD=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
           
-          # Show key info (first line only)
-          echo "Key first line:"
-          head -n1 ~/.ssh/id_rsa
+          # Display connection info
+          echo "==========================================="
+          echo "🔴 TMATE TERMINAL READY"
+          echo "==========================================="
+          echo ""
+          echo "📱 COPY THIS SSH COMMAND:"
+          echo "$SSH_CMD"
+          echo ""
+          echo "==========================================="
+          echo "Paste the above command in Termius"
+          echo "Session active for 6 hours"
+          echo "==========================================="
           
-          # Validate key format
-          if grep -q "BEGIN" ~/.ssh/id_rsa; then
-            echo "✅ Key format looks correct"
-          else
-            echo "❌ Key format incorrect - missing BEGIN line"
-            exit 1
-          fi
+          # Save to file
+          echo "$SSH_CMD" > tmate-connection.txt
       
-      - name: Test SSH Connection
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
+      - name: Upload connection info
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmate-connection
+          path: tmate-connection.txt
+          retention-days: 1
+      
+      - name: Keep terminal alive
         run: |
-          if [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ]; then
-            echo "❌ Missing VPS_HOST or VPS_USER"
-            exit 1
-          fi
-          
-          echo "Testing connection to $VPS_USER@$VPS_HOST..."
-          
-          # Add host to known_hosts
-          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          
-          # Test connection
-          if ssh -o ConnectTimeout=5 \
-                   -o StrictHostKeyChecking=no \
-                   -o BatchMode=yes \
-                   "$VPS_USER@$VPS_HOST" "echo '✅ SSH connection successful'"; then
-            echo "✅ Connection test passed!"
-          else
-            echo "❌ Connection failed"
-            echo ""
-            echo "Troubleshooting steps:"
-            echo "1. Verify VPS_HOST is correct: $VPS_HOST"
-            echo "2. Verify VPS_USER is correct: $VPS_USER"
-            echo "3. Make sure the public key is added to ~/.ssh/authorized_keys on your VPS"
-            echo "4. Check if VPS firewall allows SSH (port 22)"
-            exit 1
-          fi
+          echo "✅ Terminal is running"
+          echo "Connection string saved in artifacts"
+          echo ""
+          echo "Press Ctrl+C to stop, or wait 6 hours for auto-stop"
+          echo ""
+          # Keep running
+          while true; do
+            echo "Terminal active - $(date)"
+            sleep 60
+          done
