@@ -1,0 +1,48 @@
+name: Tmate Session with Token
+on: [workflow_dispatch]  # Only manual trigger for security
+
+jobs:
+  tmate-session:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Install tmate
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y tmate curl
+        
+    - name: Setup tmate session with token
+      run: |
+        # Start tmate session
+        tmate -S /tmp/tmate.sock new-session -d
+        
+        # Wait for tmate to initialize
+        sleep 5
+        
+        # Get session details
+        SSH_STRING=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+        WEB_URL=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
+        
+        echo "===================================="
+        echo "🔑 SSH Connection: $SSH_STRING"
+        echo "🌐 Web URL: $WEB_URL"
+        echo "===================================="
+        
+        # Optionally send to a webhook or save as artifact
+        echo "$SSH_STRING" > tmate_connection.txt
+        echo "$WEB_URL" >> tmate_connection.txt
+        
+    - name: Upload connection details as artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: tmate-connection
+        path: tmate_connection.txt
+        
+    - name: Keep session alive
+      run: |
+        echo "Tmate session active for 6 hours"
+        echo "Download artifact for connection details"
+        sleep 21600  # 6 hours
